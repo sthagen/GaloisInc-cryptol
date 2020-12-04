@@ -71,27 +71,38 @@ sat (ProveSatParams (Prover name) jsonExpr num) =
                 Satisfied <$> traverse satResult results
 
   where
-    satResult :: [(Type, Expr, Value)] -> Method ServerState [(JSONType, Expression)]
-    satResult es = traverse result es
+    satResult :: [(Type, Expr, Value)] -> Method ServerState Model
+    satResult es = Model <$> traverse mkAssignment es
 
-    result (t, _, v) =
+    mkAssignment (t, _, v) =
       do prims <- runModuleCmd getPrimMap
          e <- observe $ readBack prims t v
-         return (JSONType mempty t, e)
+         return $ SatArgAssignment { assignmentType = JSONType mempty t
+                                   , assignmentExpr = e}
 
-data SatResult = Unsatisfiable | Satisfied [[(JSONType, Expression)]]
+data SatArgAssignment
+  = SatArgAssignment
+    { assignmentType :: JSONType
+    , assignmentExpr :: Expression
+    }
+
+newtype Model = Model {modelAssignments :: [SatArgAssignment]}
+
+data SatResult
+  = Unsatisfiable
+  | Satisfied [Model]
 
 instance ToJSON SatResult where
-  toJSON Unsatisfiable = JSON.object ["result" .= ("unsatisfiable" :: Text)]
-  toJSON (Satisfied xs) =
-    JSON.object [ "result" .= ("satisfied" :: Text)
-                , "model" .=
-                  [ [ JSON.object [ "type" .= t
-                                  , "expr" .= e
+  toJSON Unsatisfiable = JSON.object ["result" .= ("unsat" :: Text)]
+  toJSON (Satisfied models) =
+    JSON.object [ "result" .= ("sat" :: Text)
+                , "models" .=
+                  [ [ JSON.object [ "type" .= assignmentType a
+                                  , "expr" .= assignmentExpr a
                                   ]
-                    | (t, e) <- res
+                    | a <- modelAssignments m
                     ]
-                  | res <- xs
+                  | m <- models
                   ]
                 ]
 

@@ -47,5 +47,5 @@ cryptolMethods =
   , ("call",                Query,   method call)
   , ("visible names",       Query,   method visibleNames)
   , ("check type",          Query,   method checkType)
-  , ("satisfy",             Query,   method sat)
+  , ("sat",                 Query,   method sat)
   ]
