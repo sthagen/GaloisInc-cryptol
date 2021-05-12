@@ -7,6 +7,7 @@ module CryptolServer.EvalExpr
   ) where
 
 import qualified Argo.Doc as Doc
+import Control.Exception (throwIO)
 import Control.Monad.IO.Class
 import Data.Aeson as JSON
 
@@ -37,29 +38,31 @@ evalExpression (EvalExprParams jsonExpr) =
      evalExpression' e
 
 evalExpression' :: P.Expr PName -> CryptolCommand JSON.Value
-evalExpression' e =
-  do (_expr, ty, schema) <- runModuleCmd (checkExpr e)
-     -- TODO: see Cryptol REPL for how to check whether we
-     -- can actually evaluate things, which we can't do in
-     -- a parameterized module
-     s <- getTCSolver
-     perhapsDef <- liftIO (defaultReplExpr s ty schema)
-     case perhapsDef of
-       Nothing ->
-         raise (evalPolyErr schema)
-       Just (tys, checked) ->
-         do -- TODO: warnDefaults here
-            let su = listParamSubst tys
-            let theType = apSubst su (sType schema)
-            tenv  <- E.envTypes . deEnv . meDynEnv <$> getModuleEnv
-            let tval = E.evalValType tenv theType
-            res <- runModuleCmd (evalExpr checked)
-            val <- observe $ readBack tval res
-            return (JSON.object [ "value" .= val
-                                , "type string" .= pretty theType
-                                , "type" .= JSONSchema (Forall [] [] theType)
-                                ])
-
+evalExpression' e = do
+  (_expr, ty, schema) <- liftModuleCmd (checkExpr e)
+  -- TODO: see Cryptol REPL for how to check whether we
+  -- can actually evaluate things, which we can't do in
+  -- a parameterized module
+  s <- getTCSolver
+  perhapsDef <- liftIO (defaultReplExpr s ty schema)
+  case perhapsDef of
+    Nothing ->
+      raise (evalPolyErr schema)
+    Just (tys, checked) ->
+      do -- TODO: warnDefaults here
+         let su = listParamSubst tys
+         let theType = apSubst su (sType schema)
+         tenv  <- E.envTypes . deEnv . meDynEnv <$> getModuleEnv
+         let tval = E.evalValType tenv theType
+         val <- liftModuleCmd (evalExpr checked)
+         mExpr<- readBack tval val
+         case mExpr of
+           Just expr ->
+             pure $  JSON.object [ "value" .= expr
+                                 , "type string" .= pretty theType
+                                 , "type" .= JSONSchema (Forall [] [] theType)
+                                 ]
+           Nothing -> liftIO $ throwIO (invalidType theType)
 newtype EvalExprParams =
   EvalExprParams Expression
 

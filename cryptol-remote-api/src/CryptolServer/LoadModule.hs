@@ -25,7 +25,7 @@ loadFileDescr = Doc.Paragraph [Doc.Text "Load the specified module (by file path
 
 loadFile :: LoadFileParams -> CryptolCommand ()
 loadFile (LoadFileParams fn) =
-  void $ runModuleCmd (loadModuleByPath fn)
+  void $ liftModuleCmd (loadModuleByPath fn)
 
 newtype LoadFileParams
   = LoadFileParams FilePath
@@ -49,7 +49,7 @@ loadModuleDescr = Doc.Paragraph [Doc.Text "Load the specified module (by name)."
 
 loadModule :: LoadModuleParams -> CryptolCommand ()
 loadModule (LoadModuleParams mn) =
-  void $ runModuleCmd (loadModuleByName mn)
+  void $ liftModuleCmd (loadModuleByName mn)
 
 newtype JSONModuleName
   = JSONModuleName { unJSONModName :: ModName }

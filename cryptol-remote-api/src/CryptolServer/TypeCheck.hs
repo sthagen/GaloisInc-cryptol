@@ -24,7 +24,7 @@ checkTypeDescr =
 checkType :: TypeCheckParams -> CryptolCommand JSON.Value
 checkType (TypeCheckParams e) =
   do e' <- getExpr e
-     (_expr, _ty, schema) <- runModuleCmd (checkExpr e')
+     (_expr, _ty, schema) <- liftModuleCmd (checkExpr e')
      return (JSON.object [ "type schema" .= JSONSchema schema ])
   where
     -- FIXME: Why is this check not being used?

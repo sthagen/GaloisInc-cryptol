@@ -30,6 +30,16 @@ class CryptolLiteral(CryptolCode):
     def __to_cryptol__(self, ty : CryptolType) -> Any:
         return self._code
 
+class CryptolNewtype(CryptolCode):
+    def __init__(self, newtype : Newtype, fields : Dict[str, Any]) -> None:
+        self._newtype = newtype
+        self._fields = fields
+
+    def __to_cryptol__(self, ty : CryptolType) -> Any:
+        return {'expression': 'newtype',
+                'newtype': self._name,
+                'arguments': [to_cryptol(arg) for arg in self._rands]}
+
 class CryptolApplication(CryptolCode):
     def __init__(self, rator : CryptolJSON, *rands : CryptolJSON) -> None:
         self._rator = rator
@@ -407,6 +417,16 @@ class Record(CryptolType):
     def __repr__(self) -> str:
         return f"Record({self.fields!r})"
 
+
+class Newtype(CryptolType):
+    def __init__(self, name : str, uid : int, args : List[CryptolType]) -> None:
+        self.name = name
+        self.uid  = uid
+        self.args = args
+
+    def __repr__(self) -> str:
+        return f"Newtype({self.name!r}, {self.uid!r}, {self.args!r})"
+
 def to_type(t : Any) -> CryptolType:
     if t['type'] == 'variable':
         return Var(t['name'], to_kind(t['kind']))
@@ -450,6 +470,8 @@ def to_type(t : Any) -> CryptolType:
         return Tuple(*map(to_type, t['contents']))
     elif t['type'] == 'record':
         return Record({k : to_type(t['fields'][k]) for k in t['fields']})
+    elif t['type'] == 'newtype':
+        return Newtype(t['name'], t['uid'], map(to_type, t['arguments']))
     elif t['type'] == 'Integer':
         return Integer()
     elif t['type'] == 'Rational':

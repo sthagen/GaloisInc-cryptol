@@ -13,10 +13,11 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.Text (Text)
 
 import Cryptol.Eval (EvalOpts(..))
-import Cryptol.ModuleSystem (ModuleCmd, ModuleEnv, ModuleInput(..))
+import Cryptol.ModuleSystem (ModuleCmd, ModuleEnv(..), ModuleInput(..))
 import Cryptol.ModuleSystem.Env
-  (getLoadedModules, lmFilePath, lmFingerprint, meLoadedModules,
-   initialModuleEnv, meSearchPath, ModulePath(..))
+  (getLoadedModules, lmFilePath, lmFingerprint,
+   initialModuleEnv, ModulePath(..))
+import Cryptol.ModuleSystem.Name (FreshM(..))
 import Cryptol.ModuleSystem.Fingerprint ( fingerprintFile )
 import Cryptol.Parser.AST (ModName)
 import Cryptol.TypeCheck( defaultSolverConfig )
@@ -73,15 +74,19 @@ instance CryptolMethod CryptolNotification where
 getModuleEnv :: CryptolCommand ModuleEnv
 getModuleEnv = CryptolCommand $ const $ view moduleEnv <$> Argo.getState
 
-getTCSolver :: CryptolCommand SMT.Solver
-getTCSolver = CryptolCommand $ const $ view tcSolver <$> Argo.getState
-
 setModuleEnv :: ModuleEnv -> CryptolCommand ()
 setModuleEnv me =
   CryptolCommand $ const $ Argo.getState >>= \s -> Argo.setState (set moduleEnv me s)
 
-runModuleCmd :: ModuleCmd a -> CryptolCommand a
-runModuleCmd cmd =
+modifyModuleEnv :: (ModuleEnv -> ModuleEnv) -> CryptolCommand ()
+modifyModuleEnv f =
+  CryptolCommand $ const $ Argo.getState >>= \s -> Argo.setState (set moduleEnv (f (view moduleEnv s)) s)
+
+getTCSolver :: CryptolCommand SMT.Solver
+getTCSolver = CryptolCommand $ const $ view tcSolver <$> Argo.getState
+
+liftModuleCmd :: ModuleCmd a -> CryptolCommand a
+liftModuleCmd cmd =
     do Options callStacks evOpts <- getOptions
        s <- CryptolCommand $ const Argo.getState
        reader <- CryptolCommand $ const Argo.getFileReader
@@ -140,6 +145,14 @@ extendSearchPath paths =
   over moduleEnv $ \me -> me { meSearchPath = nubOrd $ paths ++ meSearchPath me }
 
 
+instance FreshM CryptolCommand where
+  liftSupply f = do
+    serverState <- CryptolCommand $ const Argo.getState
+    let mEnv = view moduleEnv serverState
+        (res, supply') = f (meSupply $ mEnv)
+        mEnv' = mEnv { meSupply = supply' }
+    CryptolCommand $ const (Argo.modifyState $ set moduleEnv mEnv')
+    pure res
 
 
 -- | Check that all of the modules loaded in the Cryptol environment

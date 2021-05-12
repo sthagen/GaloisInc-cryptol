@@ -1,6 +1,6 @@
 // This is a development of rational complex numbers
 
-type Q = Rational
+type Q = Integer
 
 // Complex rational numbers in rectangular coordinates
 newtype CplxQ =
