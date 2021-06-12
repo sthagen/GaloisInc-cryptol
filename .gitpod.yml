@@ -1,6 +1,9 @@
 image:
   file: .gitpod.Dockerfile
-
+vscode:
+  extensions:
+    - haskell.haskell
+    - justusadam.language-haskell
 tasks:
   - name: TCP Tunnel
     command: chisel server --socks5
@@ -14,18 +17,24 @@ tasks:
       FREEZE=cabal.GHC-$(ghc --numeric-version).config
       test -e $FREEZE && ln -s $FREEZE cabal.project.freeze
   - command: |
-      mkdir -p ~/.ssh
-      if test -z "$SSH_KEY"; then
-          echo "Warning: SSH_KEY not set, skipping SSH setup"
+      ssh-keygen -q -t rsa -N '' -f ~/.ssh/id_rsa
+      echo
+      SSH_KEY=~/.ssh/id_rsa.$(basename $(gp url))
+      echo "cat <<EOF >$SSH_KEY"
+      cat ~/.ssh/id_rsa
+      echo "EOF"
+      if test -z "$SSH_PUBKEY"; then
+          echo "SSH_PUBKEY not set, skipping ~/.ssh/authorized_keys update"
       else
-          echo "$SSH_KEY" >> ~/.ssh/authorized_keys
-          echo "1. Install Chisel on your local machine, e.g. curl https://i.jpillora.com/chisel! | bash"
-          echo "   see https://github.com/jpillora/chisel"
-          echo ""
-          echo "2. Connect via SSH from your local machine:"
-          echo "   ssh -o ProxyCommand='chisel client $(gp url 8080) stdio:%h:%p' gitpod@localhost -p 2222"
-          echo ""
+          echo "$SSH_PUBKEY" >> ~/.ssh/authorized_keys
       fi
+
+      echo "curl https://i.jpillora.com/chisel! | bash"
+      echo "ssh \\"
+      echo "  -o ProxyCommand='chisel client $(gp url 8080) stdio:%h:%p' \\"
+      echo "  gitpod@localhost -p 2222"
+      echo
+      echo "To connect from your local machine, paste the above script into your local shell."
 ports:
   - port: 8080
   - port: 2222
