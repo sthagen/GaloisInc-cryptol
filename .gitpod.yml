@@ -20,6 +20,8 @@ tasks:
       ssh-keygen -q -t rsa -N '' -f ~/.ssh/id_rsa
       echo
       SSH_KEY=~/.ssh/id_rsa.$(basename $(gp url))
+      echo "Paste the below script into your local shell to connect."
+      echo "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
       echo "cat <<EOF >$SSH_KEY"
       cat ~/.ssh/id_rsa
       echo "EOF"
@@ -33,8 +35,8 @@ tasks:
       echo "ssh \\"
       echo "  -o ProxyCommand='chisel client $(gp url 8080) stdio:%h:%p' \\"
       echo "  gitpod@localhost -p 2222"
-      echo
-      echo "To connect from your local machine, paste the above script into your local shell."
+      echo "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+      echo "Paste the above script into your local shell to connect."
 ports:
   - port: 8080
   - port: 2222
