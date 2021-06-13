@@ -22,6 +22,7 @@ tasks:
       SSH_KEY=~/.ssh/id_rsa.$(basename $(gp url))
       echo "Paste the below script into your local shell to connect."
       echo "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+      echo
       echo "cat <<EOF >$SSH_KEY"
       cat ~/.ssh/id_rsa
       echo "EOF"
@@ -35,6 +36,7 @@ tasks:
       echo "ssh \\"
       echo "  -o ProxyCommand='chisel client $(gp url 8080) stdio:%h:%p' \\"
       echo "  gitpod@localhost -p 2222"
+      echo
       echo "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
       echo "Paste the above script into your local shell to connect."
 ports:
