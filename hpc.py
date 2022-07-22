@@ -30,6 +30,8 @@ hpc_tixs_dir = "./hpc_tixs"
 
 hpc_dir = "./dist-newstyle/build/x86_64-osx/ghc-8.10.7/cryptol-2.13.0.99/hpc/vanilla/mix/cryptol-2.13.0.99"
 
+hpc_markup_dir = "./hpc_markup"
+
 mix_files = "Cryptol.AES Cryptol.Backend.Arch Cryptol.Backend.Concrete Cryptol.Backend.FloatHelpers Cryptol.Backend.Monad Cryptol.Backend.SBV Cryptol.Backend.SeqMap Cryptol.Backend.What4 Cryptol.Backend.WordValue Cryptol.Backend Cryptol.Eval.Concrete Cryptol.Eval.Env Cryptol.Eval.Generic Cryptol.Eval.Prims Cryptol.Eval.Reference Cryptol.Eval.SBV Cryptol.Eval.Type Cryptol.Eval.Value Cryptol.Eval.What4 Cryptol.Eval Cryptol.F2 Cryptol.IR.FreeVars Cryptol.ModuleSystem.Base Cryptol.ModuleSystem.Env Cryptol.ModuleSystem.Exports Cryptol.ModuleSystem.Fingerprint Cryptol.ModuleSystem.InstantiateModule Cryptol.ModuleSystem.Interface Cryptol.ModuleSystem.Monad Cryptol.ModuleSystem.Name Cryptol.ModuleSystem.NamingEnv Cryptol.ModuleSystem.Renamer.Error Cryptol.ModuleSystem.Renamer.Monad Cryptol.ModuleSystem.Renamer Cryptol.ModuleSystem Cryptol.Parser.AST Cryptol.Parser.Layout Cryptol.Parser.LexerUtils Cryptol.Parser.Name Cryptol.Parser.Names Cryptol.Parser.NoInclude Cryptol.Parser.NoPat Cryptol.Parser.ParserUtils Cryptol.Parser.Position Cryptol.Parser.Selector Cryptol.Parser.Token Cryptol.Parser.Unlit Cryptol.Parser.Utils Cryptol.Prelude Cryptol.PrimeEC Cryptol.REPL.Browse Cryptol.REPL.Command Cryptol.REPL.Monad Cryptol.REPL.Trie Cryptol.SHA Cryptol.Symbolic.SBV Cryptol.Symbolic.What4 Cryptol.Symbolic Cryptol.Testing.Random Cryptol.Transform.AddModParams Cryptol.Transform.MonoValues Cryptol.Transform.Specialize Cryptol.TypeCheck.AST Cryptol.TypeCheck.CheckModuleInstance Cryptol.TypeCheck.Default Cryptol.TypeCheck.Error Cryptol.TypeCheck.Infer Cryptol.TypeCheck.InferTypes Cryptol.TypeCheck.Instantiate Cryptol.TypeCheck.Interface Cryptol.TypeCheck.Kind Cryptol.TypeCheck.Monad Cryptol.TypeCheck.PP Cryptol.TypeCheck.Parseable Cryptol.TypeCheck.Sanity Cryptol.TypeCheck.SimpType Cryptol.TypeCheck.SimpleSolver Cryptol.TypeCheck.Solve Cryptol.TypeCheck.Solver.Class Cryptol.TypeCheck.Solver.Improve Cryptol.TypeCheck.Solver.InfNat Cryptol.TypeCheck.Solver.Numeric.Fin Cryptol.TypeCheck.Solver.Numeric.Interval Cryptol.TypeCheck.Solver.Numeric Cryptol.TypeCheck.Solver.SMT Cryptol.TypeCheck.Solver.Selector Cryptol.TypeCheck.Solver.Types Cryptol.TypeCheck.Solver.Utils Cryptol.TypeCheck.Subst Cryptol.TypeCheck.TCon Cryptol.TypeCheck.Type Cryptol.TypeCheck.TypeMap Cryptol.TypeCheck.TypeOf Cryptol.TypeCheck.TypePat Cryptol.TypeCheck.Unify Cryptol.TypeCheck Cryptol.Utils.Debug Cryptol.Utils.Fixity Cryptol.Utils.Ident Cryptol.Utils.Logger Cryptol.Utils.Misc Cryptol.Utils.PP Cryptol.Utils.Panic Cryptol.Utils.Patterns Cryptol.Utils.RecordMap GHC.Num.Compat"
 
 # 
@@ -83,11 +85,12 @@ def run_test(test_dir, test_name):
 
 def report_test(test_dir, test_name):
   shell(f'mkdir -p {to_test_tix_dir(test_dir)}')
-  out = shell(f'hpc report --hpcdir={hpc_dir} {to_test_tix_file(test_dir, test_name)} {mix_files}')
+  shell(f'hpc report --hpcdir={hpc_dir} {to_test_tix_file(test_dir, test_name)} {mix_files}')
 
 def markup_test(test_dir, test_name):
   shell(f'mkdir -p {to_test_tix_dir(test_dir)}')
-  out = shell(f'hpc markup --hpcdir={hpc_dir} {to_test_tix_file(test_dir, test_name)} {mix_files}')
+  shell(f'hpc markup --hpcdir={hpc_dir} {to_test_tix_file(test_dir, test_name)} {mix_files}')
+  shell(f'mv hpc_index*.html {hpc_markup_dir}')
 
 # combines via ADD into tests/combos/combo.tix
 def sum_test_tixs(test_dirs_names):
