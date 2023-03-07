@@ -64,6 +64,7 @@ import           Data.Text (Text)
 data TCTopEntity =
     TCTopModule (ModuleG ModName)
   | TCTopSignature ModName ModParamNames
+  | TCTopAlias ModName ModName
     deriving (Show, Generic, NFData)
 
 tcTopEntitytName :: TCTopEntity -> ModName
@@ -71,13 +72,15 @@ tcTopEntitytName ent =
   case ent of
     TCTopModule m -> mName m
     TCTopSignature m _ -> m
+    TCTopAlias m _  -> m
 
 -- | Panics if the entity is not a module
 tcTopEntityToModule :: TCTopEntity -> Module
 tcTopEntityToModule ent =
   case ent of
     TCTopModule m -> m
-    TCTopSignature {} -> panic "tcTopEntityToModule" [ "Not a module" ]
+    TCTopSignature {} -> panic "tcTopEntityToModule" [ "Iface is not a module" ]
+    TCTopAlias {} -> panic "tcTopEntityToModule" [ "Alias is not a module"]
 
 
 -- | A Cryptol module.
@@ -111,6 +114,7 @@ data ModuleG mname =
                      , mDecls            :: [DeclGroup]
                      , mSubmodules       :: Map Name (IfaceNames Name)
                      , mSignatures       :: !(Map Name ModParamNames)
+                     , mModuleAliases    :: !(Map Name (ImpName Name))
                      } deriving (Show, Generic, NFData)
 
 emptyModule :: mname -> ModuleG mname
@@ -134,6 +138,7 @@ emptyModule nm =
     , mFunctors         = mempty
     , mSubmodules       = mempty
     , mSignatures       = mempty
+    , mModuleAliases    = mempty
     }
 
 -- | Find all the foreign declarations in the module and return their names and FFIFunTypes.
@@ -269,6 +274,7 @@ instance PP TCTopEntity where
       TCTopModule m -> pp m
       TCTopSignature x p ->
         ("interface" <+> pp x <+> "where") $$ nest 2 (pp p)
+      TCTopAlias m ma -> pp m <+> "=" <+> pp ma
 
 
 instance PP (WithNames Expr) where
@@ -484,3 +490,4 @@ instance PP (WithNames TCTopEntity) where
      TCTopModule m -> ppWithNames nm m
      TCTopSignature n ps ->
         hang ("interface module" <+> pp n <+> "where") 2 (pp ps)
+     TCTopAlias m ma -> pp m <+> "=" <+> pp ma

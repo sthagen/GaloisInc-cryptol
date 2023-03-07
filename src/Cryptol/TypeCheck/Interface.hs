@@ -44,6 +44,7 @@ genModDefines m =
     , Map.keysSet  (mSubmodules m)
     , Map.keysSet  (mFunctors m)
     , Map.keysSet  (mSignatures m)
+    , Map.keysSet  (mModuleAliases m)
     ] `Set.difference` nestedInSet (mNested m)
   where
   nestedInSet = Set.unions . map inNested . Set.toList
@@ -72,6 +73,7 @@ genIfaceWithNames names m =
     , ifModules         = mSubmodules m
     , ifSignatures      = mSignatures m
     , ifFunctors        = genIface <$> mFunctors m
+    , ifModuleAliases   = mModuleAliases m
     }
 
   , ifParams = mParams m

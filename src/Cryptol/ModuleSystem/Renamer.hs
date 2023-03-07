@@ -23,9 +23,12 @@ module Cryptol.ModuleSystem.Renamer (
   , renameModule
   , renameTopDecls
   , RenamerInfo(..)
+  , RenTopMod(..)
   , NameType(..)
   , RenamedModule(..)
   ) where
+
+import Debug.Trace
 
 import Prelude ()
 import Prelude.Compat
@@ -75,6 +78,8 @@ The Renamer Algorithm
   - Here we detect repeated top-level definitions in a module.
   - Module instantiations also get a name, but are not yet resolved, so
     we don't know what's defined by them.
+  - Module aliases also get a name, but are not yet resolved so
+  - we don't know what's defined by them.
   - We do not generate unique names for functor parameters---those will
     be matched textually to the arguments when applied.
   - We *do* generate unique names for declarations in "signatures"
@@ -86,12 +91,12 @@ The Renamer Algorithm
       (e.g., `x` in a signature is matched with the thing named `x` in a module,
        even though these two `x`s will have different unique `id`s)
 
-
 3. Resolve imports and instantiations (see "Cryptol.ModuleSystem.Imports")
   - Resolves names in submodule imports
   - Resolves functor instantiations:
     * generate new names for declarations in the functors.
     * this includes any nested modules, and things nested within them.
+  - Resolve module aliases
   - At this point we have enough information to know what's exported by
     each module.
 
@@ -284,6 +289,7 @@ renameModule' mname m =
              do d <- InterfaceModule <$> renameIfaceModule mname s
                 inScope <- getNamingEnv
                 pure (inScope, m { mDef = d })
+
 
 
 checkFunctorArgs :: ModuleInstanceArgs Name -> RenameM ()

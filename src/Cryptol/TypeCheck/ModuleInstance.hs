@@ -74,6 +74,7 @@ instance ModuleInstance (ModuleG name) where
            , mDecls            = moduleInstance (mDecls m)
            , mSubmodules       = doMap (mSubmodules m)
            , mSignatures       = doMap (mSignatures m)
+           , mModuleAliases    = doMap (mModuleAliases m)
            }
 
 instance ModuleInstance Type where

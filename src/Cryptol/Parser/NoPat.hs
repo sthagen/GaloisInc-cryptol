@@ -358,6 +358,7 @@ noPatModule m =
          NormalModule ds -> NormalModule <$> noPatTopDs ds
          FunctorInstance f as i -> pure (FunctorInstance f as i)
          InterfaceModule s -> pure (InterfaceModule s)
+         ModuleAlias ma -> pure (ModuleAlias ma)
      pure m { mDef = def }
 
 --------------------------------------------------------------------------------

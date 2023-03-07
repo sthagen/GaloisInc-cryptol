@@ -453,3 +453,4 @@ instance TVars TCTopEntity where
     case ent of
       TCTopModule m -> TCTopModule (apSubst su m)
       TCTopSignature {} -> ent
+      TCTopAlias {} -> ent

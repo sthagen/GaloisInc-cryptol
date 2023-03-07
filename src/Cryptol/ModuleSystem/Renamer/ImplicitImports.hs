@@ -74,6 +74,7 @@ processModule ~dcl@(DModule m) =
 
     FunctorInstance {} -> ([dcl], [])
     InterfaceModule {} -> ([dcl], [])
+    ModuleAlias {}     -> ([dcl], [])
 
 
 

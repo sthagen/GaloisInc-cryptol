@@ -170,6 +170,8 @@ data ModuleDefinition name =
                     (ModuleInstance name)
     -- ^ The instance is filled in by the renamer
 
+  | ModuleAlias (Located (ImpName name))
+
   | InterfaceModule (Signature name)
     deriving (Show, Generic, NFData)
 
@@ -191,6 +193,7 @@ mDecls m =
     NormalModule ds         -> ds
     FunctorInstance _ _ _   -> []
     InterfaceModule {}      -> []
+    ModuleAlias {}          -> []
 
 -- | Imports of top-level (i.e. "file" based) modules.
 mImports :: ModuleG mname name -> [ Located Import ]
@@ -198,6 +201,7 @@ mImports m =
   case mDef m of
     NormalModule ds     -> mapMaybe topImp [ li | DImport li <- ds ]
     FunctorInstance {}  -> []
+    ModuleAlias {}      -> []
     InterfaceModule sig -> mapMaybe topImp (sigImports sig)
   where
   topImp li = case iModule i of
@@ -302,7 +306,7 @@ data ModuleInstanceArg name =
 data ImpName name =
     ImpTop    ModName           -- ^ A top-level module
   | ImpNested name              -- ^ The module in scope with the given name
-    deriving (Show, Generic, NFData, Eq, Ord)
+    deriving (Show, Generic, NFData, Eq, Ord, Functor)
 
 -- | A simple declaration.  Generally these are things that can appear
 -- both at the top-level of a module and in `where` clauses.
@@ -860,6 +864,7 @@ instance (Show name, PPName name) => PP (ModuleDefinition name) where
         instLines = [ " *" <+> pp k <+> "->" <+> pp v
                     | (k,v) <- Map.toList inst ]
       InterfaceModule s -> ppInterface "where" s
+      ModuleAlias m -> "=" <+> pp (thing m)
 
 
 instance (Show name, PPName name) => PP (ModuleInstanceArgs name) where
@@ -1360,6 +1365,7 @@ instance NoPos (ModuleDefinition name) where
       NormalModule ds         -> NormalModule (noPos ds)
       FunctorInstance f as ds -> FunctorInstance (noPos f) (noPos as) ds
       InterfaceModule s       -> InterfaceModule (noPos s)
+      ModuleAlias ma          -> ModuleAlias (noPos ma)
 
 instance NoPos (ModuleInstanceArgs name) where
   noPos as =

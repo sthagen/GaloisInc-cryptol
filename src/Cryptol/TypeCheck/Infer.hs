@@ -16,7 +16,6 @@
 {-# LANGUAGE BlockArguments #-}
 -- See Note [-Wincomplete-uni-patterns and irrefutable patterns] in Cryptol.TypeCheck.TypePat
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
-{-# LANGUAGE LambdaCase #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Redundant <$>" #-}
 {-# HLINT ignore "Redundant <&>" #-}
@@ -94,6 +93,11 @@ inferTopModule m =
       do newTopSignatureScope (thing (P.mName m))
          checkSignature sig
          endTopSignature
+
+    P.ModuleAlias ma ->
+      case thing ma of
+        ImpTop mma -> pure (TCTopAlias (thing (P.mName m)) mma)
+        _ -> panic "inferModule" ["Module alias is not a top module"]
 
 
 
@@ -1337,6 +1341,8 @@ checkTopDecls = mapM_ checkTopDecl
                    do newSignatureScope (thing (P.mName m)) doc
                       checkSignature sig
                       endSignature
+
+           P.ModuleAlias tgt -> addModAlias (thing (P.mName m)) (thing tgt)
 
 
         where P.NestedModule m = P.tlValue tl

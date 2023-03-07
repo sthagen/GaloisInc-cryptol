@@ -1,7 +1,6 @@
 {-# Language BlockArguments #-}
 {-# Language RecordWildCards #-}
 {-# Language FlexibleInstances #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
 module Cryptol.ModuleSystem.Binds
   ( BindsNames
@@ -45,6 +44,7 @@ import Cryptol.TypeCheck.Type(ModParamNames(..))
 
 data TopDef = TopMod ModName (Mod ())
             | TopInst ModName (ImpName PName) (ModuleInstanceArgs PName)
+            | TopAlias (ImpName PName)
 
 -- | Things defined by a module
 data Mod a = Mod
@@ -52,6 +52,10 @@ data Mod a = Mod
   , modKind      :: ModKind
   , modInstances :: Map Name (ImpName PName, ModuleInstanceArgs PName)
   , modMods      :: Map Name (Mod a) -- ^ this includes signatures
+
+  , modAliases   :: !(Map Name (ImpName (Either Name PName)))
+    -- ^ We use Either here, becasue for external modules it is Name
+    -- and for local modules it is PName
 
   , modDefines   :: NamingEnv
     {- ^ Things defined by this module.  Note the for normal modules we
@@ -72,6 +76,7 @@ data Mod a = Mod
 modNested :: Mod a -> Set Name
 modNested m = Set.unions [ Map.keysSet (modInstances m)
                          , Map.keysSet (modMods m)
+                         , Map.keysSet (modAliases m)
                          ]
 
 instance Functor Mod where
@@ -101,6 +106,7 @@ ifaceNamesToMod iface params names =
                    (ifaceToMod <$> ifFunctors decls)
                    `Map.union`
                    (ifaceSigToMod <$> ifSignatures decls)
+    , modAliases = mempty
     , modDefines = namingEnvFromNames defs
     , modPublic  = ifsPublic names
 
@@ -120,6 +126,7 @@ ifaceSigToMod ps = Mod
   , modKind      = ASignature
   , modInstances = mempty
   , modMods      = mempty
+  , modAliases   = mempty
   , modDefines   = env
   , modPublic    = namingEnvNames env
   , modState     = ()
@@ -151,6 +158,7 @@ topModuleDefs m =
     NormalModule ds -> TopMod mname <$> declsToMod (Just (TopModule mname)) ds
     FunctorInstance f as _ -> pure (TopInst mname (thing f) as)
     InterfaceModule s -> TopMod mname <$> sigToMod (TopModule mname) s
+    ModuleAlias ma -> pure (TopAlias (thing ma))
   where
   mname = thing (mName m)
 
@@ -164,6 +172,7 @@ sigToMod mp sig =
               , modKind      = ASignature
               , modInstances = mempty
               , modMods      = mempty
+              , modAliases   = mempty
               , modDefines   = env
               , modPublic    = namingEnvNames env
               , modState     = ()
@@ -193,6 +202,7 @@ declsToMod mbPath ds =
                                          then AFunctor else AModule
                   , modInstances    = mempty
                   , modMods         = mempty
+                  , modAliases      = mempty
                   , modDefines      = defs
                   , modPublic       = pub
                   , modState        = ()
@@ -227,6 +237,11 @@ declsToMod mbPath ds =
                    InterfaceModule sig ->
                       do m <- sigToMod (Nested path (nameIdent name)) sig
                          pure mo { modMods = Map.insert name m (modMods mo) }
+
+                   ModuleAlias ma ->
+                      pure mo { modAliases = Map.insert name
+                                                  (Right <$> thing ma)
+                                                  (modAliases mo) }
 
 
       _ -> pure mo

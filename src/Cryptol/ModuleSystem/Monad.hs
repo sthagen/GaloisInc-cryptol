@@ -24,11 +24,11 @@ import           Cryptol.ModuleSystem.Env
 import qualified Cryptol.ModuleSystem.Env as MEnv
 import           Cryptol.ModuleSystem.Interface
 import           Cryptol.ModuleSystem.Name (FreshM(..),Supply)
-import           Cryptol.ModuleSystem.Renamer (RenamerError(),RenamerWarning())
+import           Cryptol.ModuleSystem.Renamer
+                        (RenamerError(),RenamerWarning(),RenTopMod(..))
 import           Cryptol.ModuleSystem.NamingEnv(NamingEnv)
 import qualified Cryptol.Parser     as Parser
 import qualified Cryptol.Parser.AST as P
-import           Cryptol.Parser.Position (Located)
 import           Cryptol.Utils.Panic (panic)
 import qualified Cryptol.Parser.NoPat as NoPat
 import qualified Cryptol.Parser.ExpandPropGuards as ExpandPropGuards
@@ -37,7 +37,7 @@ import qualified Cryptol.TypeCheck as T
 import qualified Cryptol.TypeCheck.AST as T
 import qualified Cryptol.TypeCheck.Solver.SMT as SMT
 
-import           Cryptol.Parser.Position (Range)
+import           Cryptol.Parser.Position (Located,Range)
 import           Cryptol.Utils.Ident (interactiveName, noModuleName)
 import           Cryptol.Utils.PP
 import           Cryptol.Utils.Logger(Logger)
@@ -68,6 +68,7 @@ data ImportSource
   | FromImport (Located P.Import)
   | FromSigImport (Located P.ModName)
   | FromModuleInstance (Located P.ModName)
+  | FromAlias (Located P.ModName)
     deriving (Show, Generic, NFData)
 
 instance Eq ImportSource where
@@ -80,6 +81,8 @@ instance PP ImportSource where
     FromSigImport l -> text "import of interface" <+> pp (P.thing l)
     FromModuleInstance l ->
       text "instantiation of module" <+> pp (P.thing l)
+    FromAlias l ->
+      text "module alias" <+> pp (P.thing l)
 
 importedModule :: ImportSource -> P.ModName
 importedModule is =
@@ -88,6 +91,7 @@ importedModule is =
     FromImport li         -> P.iModule (P.thing li)
     FromModuleInstance l  -> P.thing l
     FromSigImport l       -> P.thing l
+    FromAlias l           -> P.thing l
 
 
 data ModuleError
@@ -468,15 +472,15 @@ getImportSource  = ModuleT $ do
     is : _ -> return is
     _      -> return (FromModule noModuleName)
 
-getIfaces :: ModuleM (Map P.ModName (Either T.ModParamNames Iface))
+getIfaces :: ModuleM (Map P.ModName RenTopMod)
 getIfaces = toMap <$> ModuleT get
   where
   toMap env = cvt <$> getLoadedEntities (meLoadedModules env)
 
   cvt ent =
     case ent of
-      Left sig -> Left (lmData sig)
-      Right mo -> Right (lmdInterface (lmData mo))
+      Left sig -> RenTopIface (lmData sig)
+      Right mo -> RenTopMod (lmdInterface (lmData mo))
 
 getLoaded :: P.ModName -> ModuleM T.Module
 getLoaded mn = ModuleT $
@@ -545,6 +549,7 @@ loadedModule path fi nameEnv fsrc m = ModuleT $ do
         case m of
           T.TCTopModule mo -> addLoadedModule path ident fi nameEnv fsrc mo
           T.TCTopSignature x s -> addLoadedSignature path ident fi nameEnv x s
+          T.TCTopAlias x y -> addLoadedAlias path ident fi nameEnv x y
 
   set $! env { meLoadedModules = newLM (meLoadedModules env) }
 

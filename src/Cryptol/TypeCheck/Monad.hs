@@ -1063,6 +1063,7 @@ endSubmodule =
                  , mPrimTypes   = add mPrimTypes
                  , mDecls       = add mDecls
                  , mSignatures  = add mSignatures
+                 , mModuleAliases = add mModuleAliases
                  , mSubmodules  = if isFun
                                     then mSubmodules y
                                     else Map.insert m (genIfaceNames x1)
@@ -1155,6 +1156,7 @@ getCurDecls =
       , mSubmodules       = uni mSubmodules
       , mFunctors         = uni mFunctors
       , mSignatures       = uni mSignatures
+      , mModuleAliases    = uni mModuleAliases
       }
     where
     uni f = f m1 <> f m2
@@ -1167,6 +1169,10 @@ addDecls ds =
   where
   add d   = Map.insert (dName d) (dSignature d)
   new rw  = foldr add (iBindTypes rw) (groupDecls ds)
+
+addModAlias :: Name -> ImpName Name -> InferM ()
+addModAlias x ma =
+  updScope \r -> r { mModuleAliases = Map.insert x ma (mModuleAliases r) }
 
 -- | The sub-computation is performed with the given type-synonym in scope.
 addTySyn :: TySyn -> InferM ()

@@ -181,6 +181,8 @@ module_def :: { Module PName }
 
   | modName '=' impName '{' modInstParams '}' { mkModuleInstance $1 $3 $5 }
 
+  | modName '=' impName                       { mkModuleAlias $1 $3 }
+
 
 modInstParams            :: { ModuleInstanceArgs PName }
   : modInstParam            { DefaultInstArg $1 }

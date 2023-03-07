@@ -405,6 +405,7 @@ addPrelude m
       FunctorInstance f as ins -> FunctorInstance f as ins
       InterfaceModule s -> InterfaceModule s { sigImports = prel
                                              : sigImports s }
+      ModuleAlias ma -> ModuleAlias ma
 
   importedMods  = map (P.iModule . P.thing) (P.mImports m)
   prel = P.Located
@@ -475,6 +476,7 @@ findDeps' m =
                   NamedInstArgs args -> mconcat (map loadNamedInstArg args)
       in fds <> ads
     InterfaceModule s -> mconcat (map loadImpD (sigImports s))
+    ModuleAlias ma -> loadImpName FromAlias ma
   where
   loadI i = (mempty, Endo (i:))
 
@@ -631,6 +633,7 @@ checkModule isrc m = do
   rewMod <- case tcm of
               T.TCTopModule mo -> T.TCTopModule <$> liftSupply (`rewModule` mo)
               T.TCTopSignature {} -> pure tcm
+              T.TCTopAlias {} -> pure tcm
   pure (R.rmInScope renMod,rewMod)
 
 data TCLinter o = TCLinter
@@ -679,6 +682,7 @@ tcTopEntitytLinter m = TCLinter
                                lintCheck (moduleLinter m) mo i
                              T.TCTopSignature {} -> Right []
                                 -- XXX: what can we lint about module interfaces
+                             T.TCTopAlias {} -> Right []
   , lintModule  = Just m
   }
 

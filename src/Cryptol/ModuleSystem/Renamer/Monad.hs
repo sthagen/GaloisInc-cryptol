@@ -46,16 +46,25 @@ data RenamerInfo = RenamerInfo
   { renSupply   :: Supply     -- ^ Use to make new names
   , renContext  :: ModPath    -- ^ We are renaming things in here
   , renEnv      :: NamingEnv  -- ^ This is what's in scope
-  , renIfaces   :: Map ModName (Either ModParamNames Iface)
+  , renIfaces   :: Map ModName RenTopMod
     -- ^ External modules
   }
 
+data RenTopMod =
+    RenTopMod Iface
+  | RenTopIface ModParamNames
+  | RenTopAlias ModName
+
 newtype RenameM a = RenameM { unRenameM :: ReaderT RO (StateT RW Lift) a }
+
+data ExtMod = ExtMod Iface (Map (ImpName Name) (Mod ()))
+            | ExtIface (Map (ImpName Name) (Mod ()))
 
 data RO = RO
   { roLoc       :: Range
   , roNames     :: NamingEnv
-  , roExternal  :: Map ModName (Maybe Iface, Map (ImpName Name) (Mod ()))
+  -- , roExternal  :: Map ModName (Maybe Iface, Map (ImpName Name) (Mod ()))
+  , roExternal  :: Map ModName ExtMod
     -- ^ Externally loaded modules. `Mod` is defined in 'Cryptol.Renamer.Binds'.
 
   , roCurMod    :: ModPath               -- ^ Current module we are working on
@@ -69,7 +78,7 @@ data RO = RO
     -- ^ Info about locally defined modules
 
   , roModParams :: Map Ident RenModParam
-    {- ^ Module parameters.  These are used when rename the module parameters,
+    {- ^ Module parameters.  These are used when renaming the module parameters,
        and only refer to the parameters of the current module (i.e., no
        outer parameters as those are not needed) -}
 
@@ -172,7 +181,7 @@ runRenamer info m = (res, warns)
 
   ro = RO { roLoc   = emptyRange
           , roNames = renEnv info
-          , roExternal = Map.mapWithKey toModMap (renIfaces info)
+          , roExternal = mkModMap
           , roCurMod = renContext info
           , roNestedMods = Map.empty
           , roResolvedModules = mempty
@@ -183,11 +192,34 @@ runRenamer info m = (res, warns)
   res | Set.null (rwErrors rw) = Right (a,rwSupply rw)
       | otherwise              = Left (Set.toList (rwErrors rw))
 
-  toModMap t ent =
-    case ent of
-      Left ps -> (Nothing, Map.singleton (ImpTop t) (ifaceSigToMod ps))
-      Right i -> (Just i, modToMap (ImpTop t) (ifaceToMod i) mempty)
+  mkModMap :: Map ModName ExtMod
+  mkModMap = addAliases (Map.foldrWithKey addMod (mempty,[]) (renIfaces info))
 
+  addMod t ent (done,todo) =
+    case ent of
+      RenTopIface ps ->
+        ( Map.insert t (ExtIface (Map.singleton (ImpTop t) (ifaceSigToMod ps)))
+                       done
+        , todo
+        )
+
+      RenTopMod i ->
+        ( Map.insert t (ExtMod i (modToMap (ImpTop t) (ifaceToMod i) mempty))
+                       done
+        , todo
+        )
+
+      RenTopAlias ma -> (done, (t,ma) : todo)
+
+  addAliases (done,todo) =
+    case todo of
+      [] -> done
+      _  -> addAliases (foldr addAlias (done,[]) todo)
+
+  addAlias (t,ma) (done,todo) =
+    case Map.lookup ma done of
+      Nothing -> (done, (t,ma) : todo)
+      Just mo -> (Map.insert t mo done, todo)
 
 
 setCurMod :: ModPath -> RenameM a -> RenameM a
@@ -419,33 +451,54 @@ warnUnused m0 env rw =
                  LocalName {} -> True
 
 
+-- | Get the top module assocaited with a module name
+getExtTop :: Map ModName a -> ImpName Name -> a
+getExtTop mp nm =
+  case Map.lookup top mp of
+    Just mo -> mo
+    Nothing -> panic "getExtTop" ["Missing external name", show (pp nm) ]
+  where
+  top = case nm of
+          ImpTop t    -> t
+          ImpNested x -> nameTopModule x
+
+-- | Get the module definition for an external module.
+-- Looks through aliases
 getExternal :: RenameM (ImpName Name -> Mod ())
-getExternal =
-  do mp <- roExternal <$> RenameM ask
-     pure \nm -> let mb = do t   <- case nm of
-                                      ImpTop t  -> pure t
-                                      ImpNested x -> nameTopModuleMaybe x
-                             (_,mp1) <- Map.lookup t mp
-                             Map.lookup nm mp1
-                 in case mb of
-                      Just m -> m
-                      Nothing -> panic "getExternal"
-                                    ["Missing external name", show (pp nm) ]
+getExternal = getExt . roExternal <$> RenameM ask
+  where
+  getExt mp nm =
+    case getExtTop mp nm of
+      ExtMod i mp1 ->
+        case nm of
+          ImpNested x
+            | Just other <- Map.lookup x (ifModuleAliases (ifDefines i)) ->
+                                                                getExt mp other
+          _ -> getFrom mp1
+      ExtIface mp1 -> getFrom mp1
+
+    where
+    getFrom mp1 =
+      case Map.lookup nm mp1 of
+        Just a -> a
+        Nothing -> panic "getExternal" ["Missing external name", show (pp nm) ]
 
 getExternalMod :: ImpName Name -> RenameM (Mod ())
 getExternalMod nm = ($ nm) <$> getExternal
 
 -- | Returns `Nothing` if the name does not refer to a module (i.e., it is a sig)
+-- Looks through aliases
 getTopModuleIface :: ImpName Name -> RenameM (Maybe Iface)
-getTopModuleIface nm =
-  do mp <- roExternal <$> RenameM ask
-     let t = case nm of
-               ImpTop t' -> t'
-               ImpNested x -> nameTopModule x
-     case Map.lookup t mp of
-       Just (mb, _) -> pure mb
-       Nothing -> panic "getTopModuleIface"
-                                ["Missing external module", show (pp nm) ]
+getTopModuleIface nm0 = search nm0 . roExternal <$> RenameM ask
+  where
+  search nm mp =
+    case (getExtTop mp nm, nm) of
+      (ExtIface {},_) -> Nothing
+      (ExtMod i _, ImpNested x)
+        | Just other <- Map.lookup x (ifModuleAliases (ifDefines i)) ->
+                                          search other mp
+      (ExtMod i _, _) -> Just i
+
 
 {- | Record an import:
       * record external dependency if the name refers to an external import

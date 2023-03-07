@@ -1059,6 +1059,12 @@ mkModuleInstanceAnon nm fun ds =
          , mDef   = FunctorInstance fun (DefaultInstAnonArg ds) mempty
          }
 
+mkModuleAlias :: Located ModName -> Located (ImpName PName) -> Module PName
+mkModuleAlias nm d =
+  Module { mName = nm
+         , mDef  = ModuleAlias d
+         }
+
 mkModuleInstance ::
   Located ModName ->
   Located (ImpName PName) ->

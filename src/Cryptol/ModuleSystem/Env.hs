@@ -359,6 +359,7 @@ data LoadedModules = LoadedModules
     -- ^ Loaded parameterized modules.
 
   , lmLoadedSignatures :: ![LoadedSignature]
+  , lmLoadedAliases :: ![LoadedAlias ]
 
   } deriving (Show, Generic, NFData)
 
@@ -384,12 +385,14 @@ instance Semigroup LoadedModules where
                                       (lmLoadedModules l) (lmLoadedModules r)
     , lmLoadedParamModules = lmLoadedParamModules l ++ lmLoadedParamModules r
     , lmLoadedSignatures   = lmLoadedSignatures l ++ lmLoadedSignatures r
+    , lmLoadedAliases = lmLoadedAliases l ++ lmLoadedAliases r
     }
 
 instance Monoid LoadedModules where
   mempty = LoadedModules { lmLoadedModules = []
                          , lmLoadedParamModules = []
                          , lmLoadedSignatures = []
+                         , lmLoadedAliases = []
                          }
   mappend = (<>)
 
@@ -435,7 +438,7 @@ data LoadedModuleData = LoadedModuleData
   } deriving (Show, Generic, NFData)
 
 type LoadedSignature = LoadedModuleG T.ModParamNames
-
+type LoadedAlias = LoadedModuleG ModName
 
 -- | Has this module been loaded already.
 isLoaded :: ModName -> LoadedModules -> Bool
@@ -453,11 +456,17 @@ isLoadedInterface mn ln = any ((mn ==) . lmName) (lmLoadedSignatures ln)
 
 lookupTCEntity :: ModName -> ModuleEnv -> Maybe (LoadedModuleG T.TCTopEntity)
 lookupTCEntity m env =
-  case lookupModule m env of
-    Just lm -> pure lm { lmData = T.TCTopModule (lmModule lm) }
-    Nothing ->
-      do lm <- lookupSignature m env
+  msum
+    [ do lm <- lookupModule m env
+         pure lm { lmData = T.TCTopModule (lmModule lm) }
+
+    , do lm <- lookupSignature m env
          pure lm { lmData = T.TCTopSignature m (lmData lm) }
+
+    , do lm <- lookupAlias m env
+         pure lm { lmData = T.TCTopAlias m (lmData lm) }
+    ]
+
 
 -- | Try to find a previously loaded module
 lookupModule :: ModName -> ModuleEnv -> Maybe LoadedModule
@@ -468,6 +477,10 @@ lookupModule mn me = search lmLoadedModules `mplus` search lmLoadedParamModules
 lookupSignature :: ModName -> ModuleEnv -> Maybe LoadedSignature
 lookupSignature mn me =
   List.find ((mn ==) . lmName) (lmLoadedSignatures (meLoadedModules me))
+
+lookupAlias :: ModName -> ModuleEnv -> Maybe LoadedAlias
+lookupAlias mn me =
+  List.find ((mn ==) . lmName) (lmLoadedAliases (meLoadedModules me))
 
 addLoadedSignature ::
   ModulePath -> String ->
@@ -485,6 +498,25 @@ addLoadedSignature path ident fi nameEnv nm si lm
             , lmModuleId    = ident
             , lmNamingEnv   = nameEnv
             , lmData        = si
+            , lmFileInfo    = fi
+            }
+
+addLoadedAlias ::
+  ModulePath -> String ->
+  FileInfo ->
+  R.NamingEnv ->
+  ModName -> ModName ->
+  LoadedModules -> LoadedModules
+addLoadedAlias path ident fi nameEnv nm ma lm
+  | isLoaded nm lm = lm
+  | otherwise = lm { lmLoadedAliases = loaded : lmLoadedAliases lm  }
+  where
+ loaded = LoadedModule
+            { lmName        = nm
+            , lmFilePath    = path
+            , lmModuleId    = ident
+            , lmNamingEnv   = nameEnv
+            , lmData        = ma
             , lmFileInfo    = fi
             }
 
@@ -527,6 +559,7 @@ removeLoadedModule rm lm =
     { lmLoadedModules       = filter (not . rm) (lmLoadedModules lm)
     , lmLoadedParamModules  = filter (not . rm) (lmLoadedParamModules lm)
     , lmLoadedSignatures    = filter (not . rm) (lmLoadedSignatures lm)
+    , lmLoadedAliases       = filter (not . rm) (lmLoadedAliases lm)
     }
 
 -- FileInfo --------------------------------------------------------------------
@@ -600,6 +633,7 @@ deIfaceDecls DEnv { deDecls = dgs, deTySyns = tySyns } =
                , ifModules = Map.empty
                , ifFunctors = Map.empty
                , ifSignatures = Map.empty
+               , ifModuleAliases = Map.empty
                }
   where
     decls = mconcat

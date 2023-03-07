@@ -44,7 +44,7 @@ import Cryptol.ModuleSystem.Name
 import Cryptol.Utils.Ident (ModName)
 import Cryptol.Utils.Panic(panic)
 import Cryptol.Utils.Fixity(Fixity)
-import Cryptol.Parser.AST(Pragma)
+import Cryptol.Parser.AST(Pragma,ImpName)
 import Cryptol.TypeCheck.Type
 
 type Iface = IfaceG ModName
@@ -99,6 +99,11 @@ data IfaceDecls = IfaceDecls
   , ifNewtypes      :: Map.Map Name Newtype
   , ifAbstractTypes :: Map.Map Name AbstractType
   , ifDecls         :: Map.Map Name IfaceDecl
+
+  , ifModuleAliases :: !(Map.Map Name (ImpName Name))
+    -- ^ Mapping for aliases.  This should refer to an actual module,
+    -- not another alias.
+
   , ifModules       :: !(Map.Map Name (IfaceNames Name))
   , ifSignatures    :: !(Map.Map Name ModParamNames)
   , ifFunctors      :: !(Map.Map Name (IfaceG Name))
@@ -122,6 +127,7 @@ filterIfaceDecls p ifs = IfaceDecls
   , ifModules       = filterMap (ifModules ifs)
   , ifFunctors      = filterMap (ifFunctors ifs)
   , ifSignatures    = filterMap (ifSignatures ifs)
+  , ifModuleAliases = filterMap (ifModuleAliases ifs)
   }
   where
   filterMap :: Map.Map Name a -> Map.Map Name a
@@ -147,6 +153,7 @@ instance Semigroup IfaceDecls where
     , ifModules  = Map.union (ifModules l)  (ifModules r)
     , ifFunctors = Map.union (ifFunctors l) (ifFunctors r)
     , ifSignatures = ifSignatures l <> ifSignatures r
+    , ifModuleAliases = ifModuleAliases l <> ifModuleAliases r
     }
 
 instance Monoid IfaceDecls where
@@ -158,8 +165,8 @@ instance Monoid IfaceDecls where
                   , ifModules = mempty
                   , ifFunctors = mempty
                   , ifSignatures = mempty
+                  , ifModuleAliases = mempty
                   }
-  mappend l r = l <> r
   mconcat ds  = IfaceDecls
     { ifTySyns   = Map.unions (map ifTySyns   ds)
     , ifNewtypes = Map.unions (map ifNewtypes ds)
@@ -168,6 +175,7 @@ instance Monoid IfaceDecls where
     , ifModules  = Map.unions (map ifModules ds)
     , ifFunctors = Map.unions (map ifFunctors ds)
     , ifSignatures = Map.unions (map ifSignatures ds)
+    , ifModuleAliases = Map.unions (map ifModuleAliases ds)
     }
 
 data IfaceDecl = IfaceDecl
