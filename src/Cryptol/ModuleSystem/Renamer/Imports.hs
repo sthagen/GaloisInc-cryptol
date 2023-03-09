@@ -281,7 +281,8 @@ data CurState' a = CurState
        all the other stuff. -}
 
   , externalModules :: ImpName Name -> Mod ()
-    -- ^ Modules defined outside the current top-level modules
+    -- ^ Modules defined outside the current top-level modules.
+    -- Does not chnage throught the algorithm
 
   , doneModules :: Map Name ResolvedLocal
     {- ^ Nested modules/signatures in the current top-level modules.

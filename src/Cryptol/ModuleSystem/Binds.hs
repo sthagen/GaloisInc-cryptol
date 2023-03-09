@@ -53,9 +53,8 @@ data Mod a = Mod
   , modInstances :: Map Name (ImpName PName, ModuleInstanceArgs PName)
   , modMods      :: Map Name (Mod a) -- ^ this includes signatures
 
-  , modAliases   :: !(Map Name (ImpName (Either Name PName)))
-    -- ^ We use Either here, becasue for external modules it is Name
-    -- and for local modules it is PName
+  , modAliases   :: !(Map Name (ImpName PName))
+    -- ^ Module alises defined in the module. RHS is not resolved yet
 
   , modDefines   :: NamingEnv
     {- ^ Things defined by this module.  Note the for normal modules we
@@ -97,6 +96,9 @@ modToMap x m mp = Map.insert x m (Map.foldrWithKey add mp (modMods m))
 ifaceToMod :: IfaceG name -> Mod ()
 ifaceToMod iface = ifaceNamesToMod iface (ifaceIsFunctor iface) (ifNames iface)
 
+-- | Make a module out of an interface.  This does not contain module alises
+-- as those are resolved when looking up external names directly in the
+-- interface.
 ifaceNamesToMod :: IfaceG topname -> Bool -> IfaceNames name -> Mod ()
 ifaceNamesToMod iface params names =
   Mod
@@ -240,7 +242,7 @@ declsToMod mbPath ds =
 
                    ModuleAlias ma ->
                       pure mo { modAliases = Map.insert name
-                                                  (Right <$> thing ma)
+                                                  (thing ma)
                                                   (modAliases mo) }
 
 
