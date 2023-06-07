@@ -78,7 +78,7 @@ import qualified Cryptol.Backend.FFI.Error as FFI
 
 import Cryptol.Utils.Ident ( preludeName, floatName, arrayName, suiteBName, primeECName
                            , preludeReferenceName, interactiveName, modNameChunks
-                           , modNameToNormalModName )
+                           , modNamesMatch )
 import Cryptol.Utils.PP (pretty)
 import Cryptol.Utils.Panic (panic)
 import Cryptol.Utils.Logger(logPutStrLn, logPrint)
@@ -591,8 +591,7 @@ checkModule isrc m = do
 
   -- check that the name of the module matches expectations
   let nm = importedModule isrc
-  unless (modNameToNormalModName nm ==
-                                  modNameToNormalModName (thing (P.mName m)))
+  unless (modNamesMatch nm (thing (P.mName m)))
          (moduleNameMismatch nm (mName m))
 
   -- remove pattern bindings
