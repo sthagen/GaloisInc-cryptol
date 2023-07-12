@@ -311,7 +311,7 @@ focusedEnv me =
 -- | The location of a module
 data ModulePath = InFile FilePath
                 | InMem String ByteString -- ^ Label, content
-    deriving (Show, Generic, NFData)
+    deriving (Show, Read, Generic, NFData)
 
 -- | In-memory things are compared by label.
 instance Eq ModulePath where
@@ -377,11 +377,18 @@ getLoadedEntities lm =
 getLoadedModules :: LoadedModules -> [LoadedModule]
 getLoadedModules x = lmLoadedParamModules x ++ lmLoadedModules x
 
+getLoadedField :: Ord a =>
+  (forall b. LoadedModuleG b -> a) -> LoadedModules -> Set a
+getLoadedField f lm = Set.fromList
+                    $ map f (lmLoadedModules lm)
+                   ++ map f (lmLoadedParamModules lm)
+                   ++ map f (lmLoadedSignatures lm)
+
 getLoadedNames :: LoadedModules -> Set ModName
-getLoadedNames lm = Set.fromList
-                  $ map lmName (lmLoadedModules lm)
-                 ++ map lmName (lmLoadedParamModules lm)
-                 ++ map lmName (lmLoadedSignatures lm)
+getLoadedNames = getLoadedField lmName
+
+getLoadedIds :: LoadedModules -> Set String
+getLoadedIds = getLoadedField lmModuleId
 
 instance Semigroup LoadedModules where
   l <> r = LoadedModules
@@ -446,6 +453,10 @@ type LoadedSignature = LoadedModuleG T.ModParamNames
 isLoaded :: ModName -> LoadedModules -> Bool
 isLoaded mn lm = mn `Set.member` getLoadedNames lm
 
+isLoadedStrict :: ModName -> String -> LoadedModules -> Bool
+isLoadedStrict mn modId lm =
+  isLoaded mn lm && modId `Set.member` getLoadedIds lm
+
 -- | Is this a loaded parameterized module.
 isLoadedParamMod :: ModName -> LoadedModules -> Bool
 isLoadedParamMod mn ln = any ((mn ==) . lmName) (lmLoadedParamModules ln)
@@ -466,13 +477,20 @@ lookupTCEntity m env =
 
 -- | Try to find a previously loaded module
 lookupModule :: ModName -> ModuleEnv -> Maybe LoadedModule
-lookupModule mn me = search lmLoadedModules `mplus` search lmLoadedParamModules
+lookupModule mn = lookupModuleWith ((mn ==) . lmName)
+
+lookupModuleWith :: (LoadedModule -> Bool) -> ModuleEnv -> Maybe LoadedModule
+lookupModuleWith p me =
+  search lmLoadedModules `mplus` search lmLoadedParamModules
   where
-  search how = List.find ((mn ==) . lmName) (how (meLoadedModules me))
+  search how = List.find p (how (meLoadedModules me))
 
 lookupSignature :: ModName -> ModuleEnv -> Maybe LoadedSignature
-lookupSignature mn me =
-  List.find ((mn ==) . lmName) (lmLoadedSignatures (meLoadedModules me))
+lookupSignature mn = lookupSignatureWith ((mn ==) . lmName)
+
+lookupSignatureWith ::
+  (LoadedSignature -> Bool) -> ModuleEnv -> Maybe LoadedSignature
+lookupSignatureWith p me = List.find p (lmLoadedSignatures (meLoadedModules me))
 
 addLoadedSignature ::
   ModulePath -> String ->
@@ -481,7 +499,7 @@ addLoadedSignature ::
   ModName -> T.ModParamNames ->
   LoadedModules -> LoadedModules
 addLoadedSignature path ident fi nameEnv nm si lm
-  | isLoaded nm lm = lm
+  | isLoadedStrict nm ident lm = lm
   | otherwise = lm { lmLoadedSignatures = loaded : lmLoadedSignatures lm }
   where
   loaded = LoadedModule
@@ -503,7 +521,7 @@ addLoadedModule ::
   Maybe ForeignSrc ->
   T.Module -> LoadedModules -> LoadedModules
 addLoadedModule path ident fi nameEnv fsrc tm lm
-  | isLoaded (T.mName tm) lm  = lm
+  | isLoadedStrict (T.mName tm) ident lm = lm
   | T.isParametrizedModule tm = lm { lmLoadedParamModules = loaded :
                                                 lmLoadedParamModules lm }
   | otherwise                = lm { lmLoadedModules =
@@ -538,7 +556,7 @@ removeLoadedModule rm lm =
 
 data FileInfo = FileInfo
   { fiFingerprint :: Fingerprint
-  , fiIncludeDeps :: Set FilePath
+  , fiIncludeDeps :: Map FilePath Fingerprint
   , fiImportDeps  :: Set ModName
   , fiForeignDeps :: Set FilePath
   } deriving (Show,Generic,NFData)
@@ -546,7 +564,7 @@ data FileInfo = FileInfo
 
 fileInfo ::
   Fingerprint ->
-  Set FilePath ->
+  Map FilePath Fingerprint ->
   Set ModName ->
   Maybe ForeignSrc ->
   FileInfo

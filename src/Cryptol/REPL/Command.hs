@@ -115,6 +115,7 @@ import Control.Monad.IO.Class(liftIO)
 import Text.Read (readMaybe)
 import Control.Applicative ((<|>))
 import qualified Data.Set as Set
+import qualified Data.Map.Strict as Map
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -1814,7 +1815,7 @@ moduleInfoCmd isFile name
                        mapM_ (\j -> rPutStrLn ("     , " ++ f j)) is
                        rPutStrLn "     ]"
 
-       depList show               "includes" (Set.toList (M.fiIncludeDeps fi))
+       depList show               "includes" (Map.keys   (M.fiIncludeDeps fi))
        depList (show . show . pp) "imports"  (Set.toList (M.fiImportDeps  fi))
        depList show               "foreign"  (Set.toList (M.fiForeignDeps fi))
 
