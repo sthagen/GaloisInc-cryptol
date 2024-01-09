@@ -64,6 +64,12 @@
   default is used when the foreign implementation cannot be found, or if the FFI
   is unavailable. The `:set evalForeign` REPL option controls this behavior.
 
+## New features
+
+* Add support for the Bitwuzla SMT solver, which can be selected with
+  `:set prover=bitwuzla`. If you want to specify a What4 or SBV backend, you can
+  use `:set prover=w4-bitwuzla` or `:set prover=sbv-bitwuzla`, respectively.
+
 ## Bug fixes
 
 * Fixed #1455, making anything in scope of the functor in scope at the REPL as

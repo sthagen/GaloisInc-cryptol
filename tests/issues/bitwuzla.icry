@@ -1,0 +1,8 @@
+// TODO RGS: File an issue about this, rename the name of this test accordingly
+:l bitwuzla.cry
+
+:set prover=w4-cvc5
+:prove add_mul_lemma
+
+:set prover=sbv-cvc5
+:prove add_mul_lemma
