@@ -77,6 +77,7 @@ import Paths_cryptol
   'type'      { Located $$ (Token (KW KW_type   ) _)}
   'newtype'   { Located $$ (Token (KW KW_newtype) _)}
   'enum'      { Located $$ (Token (KW KW_enum) _)}
+  'deriving'  { Located $$ (Token (KW KW_deriving) _)}
   'module'    { Located $$ (Token (KW KW_module ) _)}
   'submodule' { Located $$ (Token (KW KW_submodule ) _)}
   'where'     { Located $$ (Token (KW KW_where  ) _)}
@@ -450,16 +451,16 @@ propguards_quals                   :: { [Located (Prop PName)] }
   : type                              {% mkPropGuards $1 }
 
 
-newtype                            :: { Newtype PName }
-  : 'newtype' type '=' newtype_body   {% mkNewtype $2 $4 }
+newtype                                          :: { Newtype PName }
+  : 'newtype' type '=' newtype_body deriving_clause {% mkNewtype $2 $4 $5 }
 
 newtype_body            :: { Located (RecordMap Ident (Range, Type PName)) }
   : '{' '}'                {% mkRecord (rComb $1 $2) (Located emptyRange) [] }
   | '{' field_types '}'    {% mkRecord (rComb $1 $3) (Located emptyRange) $2 }
 
 
-enum                              :: { EnumDecl PName }
-  : 'enum' type '=' enum_body        {% mkEnumDecl $2 $4 }
+enum                                       :: { EnumDecl PName }
+  : 'enum' type '=' enum_body deriving_clause {% mkEnumDecl $2 $4 $5 }
 
 enum_body                         :: { [TopLevel (EnumCon PName)] }
   :     enum_con                     { [$1] }
@@ -469,6 +470,18 @@ enum_body                         :: { [TopLevel (EnumCon PName)] }
 enum_con                           :: { TopLevel (EnumCon PName) }
   : app_type                          {% mkConDecl Nothing   Public $1 }
   | doc  app_type                     {% mkConDecl (Just $1) Public $2 }
+
+deriving_clause                   :: { Maybe (DerivingClause PName) }
+  : 'deriving' deriving_clause_types { Just (mkDerivingClause $2) }
+  | {- empty -}                      { Nothing }
+
+deriving_clause_types   :: { [Type PName] }
+  : '(' ')'                { [] }
+  | '(' deriving_types ')' { $2 }
+
+deriving_types           :: { [Type PName] }
+  : type                    { [$1] }
+  | deriving_types ',' type { $3 : $1 }
 
 vars_comma                 :: { [ LPName ]  }
   : var                       { [ $1]      }

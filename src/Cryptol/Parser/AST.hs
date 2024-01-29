@@ -71,6 +71,7 @@ module Cryptol.Parser.AST
   , Import, ImportG(..), ImportSpec(..), ImpName(..), impNameModPath
   , Newtype(..)
   , EnumDecl(..), EnumCon(..)
+  , DerivingClause(..)
   , PrimType(..)
   , ParameterType(..)
   , ParameterFun(..)
@@ -521,22 +522,28 @@ data Pragma   = PragmaNote String
                 deriving (Eq, Show, Generic, NFData)
 
 data Newtype name = Newtype
-  { nName     :: Located name        -- ^ Type name
-  , nParams   :: [TParam name]       -- ^ Type params
-  , nConName  :: !name               -- ^ Constructor function name
-  , nBody     :: Rec (Type name)     -- ^ Body
+  { nName     :: Located name                -- ^ Type name
+  , nParams   :: [TParam name]               -- ^ Type params
+  , nConName  :: !name                       -- ^ Constructor function name
+  , nBody     :: Rec (Type name)             -- ^ Body
+  , nDeriv    :: Maybe (DerivingClause name) -- ^ Deriving clause (optional)
   } deriving (Eq, Show, Generic, NFData)
 
 data EnumDecl name = EnumDecl
-  { eName     :: Located name               -- ^ Type name
-  , eParams   :: [TParam name]              -- ^ Type params
-  , eCons     :: [TopLevel (EnumCon name)]  -- ^ Value constructors
+  { eName     :: Located name                -- ^ Type name
+  , eParams   :: [TParam name]               -- ^ Type params
+  , eCons     :: [TopLevel (EnumCon name)]   -- ^ Value constructors
+  , eDeriv    :: Maybe (DerivingClause name) -- ^ Deriving clause (optional)
   } deriving (Show, Generic, NFData)
 
 data EnumCon name = EnumCon
   { ecName    :: Located name
   , ecFields  :: [Type name]
   } deriving (Show, Generic, NFData)
+
+newtype DerivingClause name = DerivingClause
+  { dcTypes :: [Type name]
+  } deriving (Eq, Show, Generic, NFData)
 
 -- | A declaration for a type with no implementation.
 data PrimType name = PrimType { primTName :: Located name
@@ -1080,7 +1087,7 @@ instance (PP mname) => PP (ImportG mname) where
                 Just (DefaultInstAnonArg ds) ->
                   "where" $$ vcat (map pp ds)
                 _ -> mempty
- 
+
 
 instance PP name => PP (ImpName name) where
   ppPrec _ nm =
@@ -1542,16 +1549,21 @@ instance NoPos (Newtype name) where
                     , nParams   = nParams n
                     , nConName  = nConName n
                     , nBody     = fmap noPos (nBody n)
+                    , nDeriv    = fmap noPos (nDeriv n)
                     }
 
 instance NoPos (EnumDecl name) where
   noPos n = EnumDecl { eName    = noPos (eName n)
                      , eParams  = eParams n
                      , eCons    = map noPos (eCons n)
+                     , eDeriv   = fmap noPos (eDeriv n)
                      }
 
 instance NoPos (EnumCon name) where
   noPos c = EnumCon { ecName = noPos (ecName c), ecFields = noPos (ecFields c) }
+
+instance NoPos (DerivingClause name) where
+  noPos dc = DerivingClause { dcTypes = map noPos (dcTypes dc) }
 
 instance NoPos (Bind name) where
   noPos x = Bind { bName      = noPos (bName      x)

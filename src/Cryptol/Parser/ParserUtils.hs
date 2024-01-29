@@ -589,16 +589,18 @@ mkPropSyn thead tdef =
 mkNewtype ::
   Type PName ->
   Located (RecordMap Ident (Range, Type PName)) ->
+  Maybe (DerivingClause PName) ->
   ParseM (Newtype PName)
-mkNewtype thead def =
+mkNewtype thead def derivClause =
   do (nm,params) <- typeToDecl thead
-     pure (Newtype nm params (thing nm) (thing def))
+     pure (Newtype nm params (thing nm) (thing def) derivClause)
 
 mkEnumDecl ::
   Type PName ->
   [ TopLevel (EnumCon PName) ] {- ^ Reversed -} ->
+  Maybe (DerivingClause PName) ->
   ParseM (EnumDecl PName)
-mkEnumDecl thead def =
+mkEnumDecl thead def derivClause =
   do (nm,params) <- typeToDecl thead
      mapM_ reportRepeated
         (Map.toList (Map.fromListWith (++) [ (thing k,[srcRange k])
@@ -607,6 +609,7 @@ mkEnumDecl thead def =
             { eName   = nm
             , eParams = params
             , eCons   = reverse def
+            , eDeriv  = derivClause
             }
   where
   reportRepeated (i,xs) =
@@ -653,6 +656,11 @@ mkConDecl mbDoc expT ty =
       Just r  -> r
       Nothing -> panic "mkConDecl" ["Missing type location"]
 
+
+mkDerivingClause ::
+  [Type PName] {- ^ Reversed -} ->
+  DerivingClause PName
+mkDerivingClause types = DerivingClause (reverse types)
 
 typeToDecl :: Type PName -> ParseM (Located PName, [TParam PName])
 typeToDecl ty0 =

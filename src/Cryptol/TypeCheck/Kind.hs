@@ -134,7 +134,7 @@ checkPropSyn (P.PropSyn x _ as ps) mbD =
 
 -- | Check a newtype declaration.
 checkNewtype :: P.Newtype Name -> Maybe Text -> InferM NominalType
-checkNewtype (P.Newtype x as con fs) mbD =
+checkNewtype (P.Newtype x as con fs _deriv) mbD =
   do ((as1,fs1),gs) <- collectGoals $
        inRange (srcRange x) $
        do r <- withTParams NoWildCards newtypeParam as $
@@ -179,6 +179,10 @@ checkEnum ed mbD =
                   , ntDef = Enum cons1
                   , ntDoc = mbD
                   }
+
+checkDerivingClause :: P.DerivingClause Name -> InferM [Type]
+checkDerivingClause (P.DerivingClause tys) =
+  traverse (\ty -> checkType ty (Just (KType :-> KProp))) tys
 
 checkPrimType :: P.PrimType Name -> Maybe Text -> InferM AbstractType
 checkPrimType p mbD =

@@ -875,12 +875,14 @@ instance Rename Newtype where
        depsOf (NamedThing nameC) (addDep (thing nameT))
 
        depsOf (NamedThing (thing nameT)) $
-         do ps'   <- traverse rename (nParams n)
-            body' <- traverse (traverse rename) (nBody n)
+         do ps'    <- traverse rename (nParams n)
+            body'  <- traverse (traverse rename) (nBody n)
+            deriv' <- traverse rename (nDeriv n)
             return Newtype { nName   = nameT
                            , nConName = nameC
                            , nParams = ps'
-                           , nBody   = body' }
+                           , nBody   = body'
+                           , nDeriv  = deriv' }
 
 instance Rename EnumDecl where
   rename n =
@@ -897,10 +899,15 @@ instance Rename EnumDecl where
                      do ts' <- traverse rename (ecFields (tlValue tlEc))
                         let con = EnumCon { ecName = c, ecFields = ts' }
                         pure tlEc { tlValue = con }
+            deriv <- traverse rename (eDeriv n)
             pure EnumDecl { eName = nameT
                           , eParams = ps'
                           , eCons = cons
+                          , eDeriv = deriv
                           }
+
+instance Rename DerivingClause where
+  rename dc = DerivingClause <$> traverse rename (dcTypes dc)
 
 -- | Try to resolve a name.
 -- SPECIAL CASE: if we have a NameUse for NSValue, we also look in NSConstructor
