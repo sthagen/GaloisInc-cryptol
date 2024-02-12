@@ -1,5 +1,7 @@
 FROM ubuntu:22.04 AS build
 
+ARG GHCVER="9.2.8"
+ARG CABALVER="3.10.1.0"
 RUN apt-get update && \
     apt-get install -y \
       # ghcup requirements
@@ -14,7 +16,9 @@ USER cryptol
 WORKDIR /cryptol
 RUN mkdir -p rootfs/usr/local/bin
 WORKDIR /cryptol/rootfs/usr/local/bin
-RUN curl -o solvers.zip -sL "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20221212/ubuntu-22.04-bin.zip"
+# The URL here is based on the same logic used to specify BIN_ZIP_FILE in
+# `.github/workflow/ci.yml`, but specialized to x86-64 Ubuntu.
+RUN curl -o solvers.zip -sL "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20230711/ubuntu-22.04-X64-bin.zip"
 RUN unzip solvers.zip && rm solvers.zip && chmod +x *
 WORKDIR /cryptol
 ENV PATH=/cryptol/rootfs/usr/local/bin:/home/cryptol/.local/bin:/home/cryptol/.ghcup/bin:$PATH
@@ -22,15 +26,15 @@ RUN z3 --version
 ARG CRYPTOLPATH="/cryptol/.cryptol"
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
-COPY cabal.GHC-8.10.7.config cabal.project.freeze
+COPY cabal.GHC-${GHCVER}.config cabal.project.freeze
 RUN mkdir -p /home/cryptol/.local/bin && \
-    curl -L https://downloads.haskell.org/~ghcup/0.1.17.7/x86_64-linux-ghcup-0.1.17.7 -o /home/cryptol/.local/bin/ghcup && \
+    curl -L https://downloads.haskell.org/~ghcup/0.1.19.4/x86_64-linux-ghcup-0.1.19.4 -o /home/cryptol/.local/bin/ghcup && \
     chmod +x /home/cryptol/.local/bin/ghcup
 RUN mkdir -p /home/cryptol/.ghcup && \
     ghcup --version && \
-    ghcup install cabal 3.6.2.0 && \
-    ghcup install ghc 8.10.7 && \
-    ghcup set ghc 8.10.7
+    ghcup install cabal ${CABALVER} && \
+    ghcup install ghc ${GHCVER} && \
+    ghcup set ghc ${GHCVER}
 RUN cabal v2-update && \
     cabal v2-build -j cryptol:exe:cryptol && \
     cp $(cabal v2-exec which cryptol) rootfs/usr/local/bin && \

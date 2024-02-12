@@ -123,6 +123,7 @@ import Data.Bits (shiftL, (.&.), (.|.))
 import Data.Char (isSpace,isPunctuation,isSymbol,isAlphaNum,isAscii)
 import Data.Function (on)
 import Data.List (intercalate, nub, isPrefixOf)
+import qualified Data.Map as Map
 import Data.Maybe (fromMaybe,mapMaybe,isNothing)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode(ExitSuccess))
@@ -406,7 +407,10 @@ evalCmd str lineNum mbBatch = do
 printCounterexample :: CounterExampleType -> Doc -> [Concrete.Value] -> REPL ()
 printCounterexample cexTy exprDoc vs =
   do ppOpts <- getPPValOpts
-     docs <- mapM (rEval . E.ppValue Concrete ppOpts) vs
+     -- NB: Use a precedence of 1 here, as `vs` will be pretty-printed as
+     -- arguments to the function in `exprDoc`. This ensures that arguments
+     -- are parenthesized as needed.
+     docs <- mapM (rEval . E.ppValuePrec Concrete ppOpts 1) vs
      let cexRes = case cexTy of
            SafetyViolation    -> [text "~> ERROR"]
            PredicateFalsified -> [text "= False"]
@@ -1817,7 +1821,7 @@ moduleInfoCmd isFile name
 
        depList show               "includes" (Map.keys   (M.fiIncludeDeps fi))
        depList (show . show . pp) "imports"  (Set.toList (M.fiImportDeps  fi))
-       depList show               "foreign"  (Set.toList (M.fiForeignDeps fi))
+       depList show               "foreign"  (Map.toList (M.fiForeignDeps fi))
 
        rPutStrLn "}"
 

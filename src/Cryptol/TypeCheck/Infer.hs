@@ -10,13 +10,11 @@
 
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BlockArguments #-}
 -- See Note [-Wincomplete-uni-patterns and irrefutable patterns] in Cryptol.TypeCheck.TypePat
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
-{-# LANGUAGE LambdaCase #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Redundant <$>" #-}
 {-# HLINT ignore "Redundant <&>" #-}
@@ -43,7 +41,7 @@ import           Cryptol.TypeCheck.Error
 import           Cryptol.TypeCheck.Solve
 import           Cryptol.TypeCheck.SimpType(tMul)
 import           Cryptol.TypeCheck.Kind(checkType,checkSchema,checkTySyn,
-                                        checkPropSyn,checkNewtype,
+                                        checkPropSyn,checkNewtype,checkEnum,
                                         checkParameterType,
                                         checkPrimType,
                                         checkParameterConstraints,
@@ -79,13 +77,14 @@ inferTopModule :: P.Module Name -> InferM TCTopEntity
 inferTopModule m =
   case P.mDef m of
     P.NormalModule ds ->
-      do newModuleScope (thing (P.mName m)) (P.exportedDecls ds)
+      do newModuleScope (thing (P.mName m)) (P.exportedDecls ds) (P.mInScope m)
          checkTopDecls ds
          proveModuleTopLevel
          endModule
 
     P.FunctorInstance f as inst ->
-      do mb <- doFunctorInst (P.ImpTop <$> P.mName m) f as inst Nothing
+      do mb <- doFunctorInst
+           (P.ImpTop <$> P.mName m) f as inst (P.mInScope m) Nothing
          case mb of
            Just mo -> pure mo
            Nothing -> panic "inferModule" ["Didnt' get a module"]
@@ -202,6 +201,7 @@ appTys expr ts tGoal =
     P.EFun      {} -> mono
     P.ESplit    {} -> mono
     P.EPrefix   {} -> mono
+    P.ECase {}     -> mono
 
     P.EParens e       -> appTys e ts tGoal
     P.EInfix a op _ b -> appTys (P.EVar (thing op) `P.EApp` a `P.EApp` b) ts tGoal
@@ -476,7 +476,132 @@ checkE expr tGoal =
            P.PrefixComplement -> "complement"
          checkE (P.EApp prim e) tGoal
 
+    P.ECase e as ->
+     do et   <- newType CasedExpression KType
+        alts <- forM as \a -> checkCaseAlt a et tGoal
+        rng  <- curRange
+        e1   <- checkE e (WithSource et CasedExpression (Just rng))
+
+        -- Check for overlapping cases that follow default patterns, e.g.,
+        --
+        --   enum Foo = A | B
+        --   f : Foo -> Bit
+        --   f l =
+        --     case l of
+        --       _ -> True
+        --       B -> False
+        --
+        -- In this example, the `B` case overlaps the catch-all `_` case.
+        let defltAltAndOthers = dropWhile (\(_,x,_) -> isJust x) alts
+        defltAlt <-
+          case defltAltAndOthers of
+            [] ->
+              pure Nothing
+            defltAlt@(_,defltPat,_):otherAlts -> do
+              unless (null otherAlts) $
+                recordError $
+                OverlappingPat defltPat [ r | (r,_,_) <- defltAltAndOthers ]
+              pure (Just defltAlt)
+
+        -- Check that there are no overlapping patterns among the case
+        -- alternatives, e.g.,
+        --
+        --   enum Foo = A | B
+        --   g : Foo -> Bit
+        --   g l =
+        --     case l of
+        --       A -> True
+        --       B -> True
+        --       B -> False
+        --
+        -- In this example, the two `B` cases overlap.
+        let mp1 = Map.fromListWith (++) [ (x,[(r,y)]) | (r,x,y) <- alts ]
+        forM_ (Map.toList mp1) \(mb,cs) ->
+          case cs of
+            [_] -> pure ()
+            _   -> recordError (OverlappingPat mb [ r | (r,_) <- cs ])
+
+        -- Check that the type of the scrutinee is unambiguously an enum.
+        et' <- applySubst et
+        cons <- case getLoc e of
+                 Just r -> inRange r (expectEnum et')
+                 Nothing -> expectEnum et'
+
+        -- Check that the case expression covers all possible constructors.
+        -- If there is a default case, there is no need to check anything,
+        -- since the default case will catch any constructors that weren't
+        -- explicitly matched on.
+        case defltAlt of
+          Just _ -> pure ()
+          Nothing ->
+            let uncoveredCons =
+                  filter
+                    (\con -> Map.notMember (Just (nameIdent (ecName con))) mp1)
+                    cons in
+            unless (null uncoveredCons) $
+              recordError $ UncoveredConPat $ map ecName uncoveredCons
+
+        let dflt = fmap (\(_,_,y) -> y) defltAlt
+        let arms = Map.fromList [ (i,a) | (_,Just i, a) <- alts ]
+        pure (ECase e1 arms dflt)
+
     P.EParens e -> checkE e tGoal
+
+
+checkCaseAlt ::
+  P.CaseAlt Name -> Type -> TypeWithSource ->
+  InferM (Range, Maybe Ident, CaseAlt)
+checkCaseAlt (P.CaseAlt pat e) srcT resT =
+  case pat of
+    P.PCon c ps ->
+      inRange (srcRange c) $
+      do (_tArgs,_pArgs,fTs,cresT) <- instantiatePCon (thing c)
+         -- XXX: should we store these somewhere?
+
+         let have = length ps
+             need = length fTs
+         unless (have == need) (recordError (InvalidConPat have need))
+         let expect = WithSource
+                        { twsType = srcT
+                        , twsRange = Just (srcRange c)
+                        , twsSource = ConPat
+                        }
+         newGoals CtExactType =<< unify expect cresT
+         xs <- zipWithM checkNested ps fTs
+         e1 <- withMonoTypes (Map.fromList xs) (checkE e resT)
+         pure (srcRange c, Just (nameIdent (thing c)), mkAlt xs e1)
+
+    P.PVar x ->
+      do let xty = (thing x, Located (srcRange x) srcT)
+         e1 <- withMonoType xty (checkE e resT)
+         pure (srcRange x, Nothing, mkAlt [xty] e1)
+
+    P.PLocated p r -> inRange r (checkCaseAlt (P.CaseAlt p e) srcT resT)
+
+    P.PTyped p t ->
+      do t1 <- checkType t (Just KType)
+         rng <- curRange
+         newGoals CtExactType =<<
+           unify (WithSource t1 TypeFromUserAnnotation (Just rng)) srcT
+         checkCaseAlt (P.CaseAlt p e) t1 resT
+
+    _ -> panic "checkCaseAlt" ["Unexpected pattern"]
+  where
+  checkNested p ty =
+    case p of
+      P.PVar x -> pure (thing x, Located (srcRange x) ty)
+      P.PLocated p1 r -> inRange r (checkNested p1 ty)
+      P.PTyped p1 t ->
+        do t1 <- checkType t (Just KType)
+           rng <- curRange
+           newGoals CtExactType =<<
+             unify (WithSource t1 TypeFromUserAnnotation (Just rng)) ty
+           checkNested p1 t1
+      _ -> panic "checkNested" ["Unexpected pattern"]
+
+
+
+  mkAlt xs = CaseAlt [ (x, thing t) | (x,t) <- xs ]
 
 
 checkRecUpd ::
@@ -609,6 +734,22 @@ expectRec fs tGoal@(WithSource ty src rng) =
            _ -> recordErrorLoc rng (TypeMismatch src rootPath ty (TRec tys))
          return res
 
+
+-- | Retrieve the constructors from a type that is expected to be unambiguously
+-- an enum, throwing an error if this is not the case.
+expectEnum :: Type -> InferM [EnumCon]
+expectEnum ty =
+  case ty of
+    TUser _ _ ty' ->
+      expectEnum ty'
+
+    TNominal nt _
+      |  Enum ecs <- ntDef nt
+      -> pure ecs
+
+    _ -> do
+      recordError (EnumTypeMismatch ty)
+      pure []
 
 expectFin :: Int -> TypeWithSource -> InferM ()
 expectFin n tGoal@(WithSource ty src rng) =
@@ -872,9 +1013,9 @@ checkNumericConstraintGuardsOK isTopLevel haveSig noSig =
   -- so no need to look at noSig
 
   hasConstraintGuards b =
-    case thing (P.bDef b) of
-      P.DPropGuards {} -> True
-      _                -> False
+    case P.bindImpl b of
+      Just (P.DPropGuards {}) -> True
+      _                       -> False
 
 
 
@@ -895,10 +1036,11 @@ guessType exprMap b@(P.Bind { .. }) =
 
     Just s ->
       do let wildOk = case thing bDef of
-                        P.DForeign {}    -> NoWildCards
-                        P.DPrim          -> NoWildCards
-                        P.DExpr {}       -> AllowWildCards
-                        P.DPropGuards {} -> NoWildCards
+                        P.DForeign {}                   -> NoWildCards
+                        P.DPrim                         -> NoWildCards
+                        P.DImpl i -> case i of
+                                       P.DExpr {}       -> AllowWildCards
+                                       P.DPropGuards {} -> NoWildCards
          s1 <- checkSchema wildOk s
          return ((name, ExtVar (fst s1)), Left (checkSigB b s1))
 
@@ -993,9 +1135,9 @@ generalize bs0 gs0 =
 
          genE e = foldr ETAbs (foldr EProofAbs (apSubst su e) qs) asPs
          genB d = d { dDefinition = case dDefinition d of
-                                      DExpr e    -> DExpr (genE e)
-                                      DPrim      -> DPrim
-                                      DForeign t -> DForeign t
+                                      DExpr e       -> DExpr (genE e)
+                                      DPrim         -> DPrim
+                                      DForeign t me -> DForeign t (genE <$> me)
                     , dSignature  = Forall asPs qs
                                   $ apSubst su $ sType $ dSignature d
                     }
@@ -1017,31 +1159,33 @@ checkMonoB b t =
 
     P.DPrim -> panic "checkMonoB" ["Primitive with no signature?"]
 
-    P.DForeign -> panic "checkMonoB" ["Foreign with no signature?"]
+    P.DForeign _ -> panic "checkMonoB" ["Foreign with no signature?"]
 
-    P.DExpr e ->
-      do let nm = thing (P.bName b)
-         let tGoal = WithSource t (DefinitionOf nm) (getLoc b)
-         e1 <- checkFun (P.FunDesc (Just nm) 0) (P.bParams b) e tGoal
-         let f = thing (P.bName b)
-         return Decl { dName = f
-                     , dSignature = Forall [] [] t
-                     , dDefinition = DExpr e1
-                     , dPragmas = P.bPragmas b
-                     , dInfix = P.bInfix b
-                     , dFixity = P.bFixity b
-                     , dDoc = P.bDoc b
-                     }
+    P.DImpl i ->
+      case i of
 
-    P.DPropGuards _ ->
-      tcPanic "checkMonoB"
-        [ "Used constraint guards without a signature at "
-        , show . pp $ P.bName b ]
+        P.DExpr e ->
+          do let nm = thing (P.bName b)
+             let tGoal = WithSource t (DefinitionOf nm) (getLoc b)
+             e1 <- checkFun (P.FunDesc (Just nm) 0) (P.bParams b) e tGoal
+             let f = thing (P.bName b)
+             return Decl { dName = f
+                         , dSignature = Forall [] [] t
+                         , dDefinition = DExpr e1
+                         , dPragmas = P.bPragmas b
+                         , dInfix = P.bInfix b
+                         , dFixity = P.bFixity b
+                         , dDoc = P.bDoc b
+                         }
+
+        P.DPropGuards _ ->
+          tcPanic "checkMonoB"
+            [ "Used constraint guards without a signature at "
+            , show . pp $ P.bName b ]
 
 -- XXX: Do we really need to do the defaulting business in two different places?
 checkSigB :: P.Bind Name -> (Schema,[Goal]) -> InferM Decl
 checkSigB b (Forall as asmps0 t0, validSchema) =
-  let name = thing (P.bName b) in
   case thing (P.bDef b) of
 
     -- XXX what should we do with validSchema in this case?
@@ -1056,10 +1200,13 @@ checkSigB b (Forall as asmps0 t0, validSchema) =
         , dDoc        = P.bDoc b
         }
 
-    P.DForeign -> do
+    P.DForeign mi -> do
+      (asmps, t, me) <-
+        case mi of
+          Just i -> fmap Just <$> checkImpl i
+          Nothing -> pure (asmps0, t0, Nothing)
       let loc = getLoc b
-          name' = thing $ P.bName b
-          src = DefinitionOf name'
+          src = DefinitionOf name
       inRangeMb loc do
         -- Ensure all type params are of kind #
         forM_ as \a ->
@@ -1067,10 +1214,10 @@ checkSigB b (Forall as asmps0 t0, validSchema) =
             recordErrorLoc loc $ UnsupportedFFIKind src a $ tpKind a
         withTParams as do
           ffiFunType <-
-            case toFFIFunType (Forall as asmps0 t0) of
+            case toFFIFunType (Forall as asmps t) of
               Right (props, ffiFunType) -> ffiFunType <$ do
-                ffiGoals <- traverse (newGoal (CtFFI name')) props
-                proveImplication True (Just name') as asmps0 $
+                ffiGoals <- traverse (newGoal (CtFFI name)) props
+                proveImplication True (Just name) as asmps $
                   validSchema ++ ffiGoals
               Left err -> do
                 recordErrorLoc loc $ UnsupportedFFIType src err
@@ -1079,32 +1226,44 @@ checkSigB b (Forall as asmps0 t0, validSchema) =
                   { ffiTParams = as, ffiArgTypes = []
                   , ffiRetType = FFITuple [] }
           pure Decl { dName       = thing (P.bName b)
-                    , dSignature  = Forall as asmps0 t0
-                    , dDefinition = DForeign ffiFunType
+                    , dSignature  = Forall as asmps t
+                    , dDefinition = DForeign ffiFunType me
                     , dPragmas    = P.bPragmas b
                     , dInfix      = P.bInfix b
                     , dFixity     = P.bFixity b
                     , dDoc        = P.bDoc b
                     }
 
-    P.DExpr e0 ->
-      inRangeMb (getLoc b) $
-      withTParams as $ do
-        (t, asmps, e2) <- checkBindDefExpr [] asmps0 e0
+    P.DImpl i -> do
+      (asmps, t, expr) <- checkImpl i
+      return Decl
+        { dName       = name
+        , dSignature  = Forall as asmps t
+        , dDefinition = DExpr expr
+        , dPragmas    = P.bPragmas b
+        , dInfix      = P.bInfix b
+        , dFixity     = P.bFixity b
+        , dDoc        = P.bDoc b
+        }
 
-        return Decl
-          { dName       = name
-          , dSignature  = Forall as asmps t
-          , dDefinition = DExpr (foldr ETAbs (foldr EProofAbs e2 asmps) as)
-          , dPragmas    = P.bPragmas b
-          , dInfix      = P.bInfix b
-          , dFixity     = P.bFixity b
-          , dDoc        = P.bDoc b
-          }
+  where
 
-    P.DPropGuards cases0 ->
+    name = thing (P.bName b)
+
+    checkImpl :: P.BindImpl Name -> InferM ([Prop], Type, Expr)
+    checkImpl i =
       inRangeMb (getLoc b) $
-        withTParams as $ do
+      withTParams as $
+      case i of
+
+        P.DExpr e0 -> do
+          (t, asmps, e2) <- checkBindDefExpr [] asmps0 e0
+          pure ( asmps
+               , t
+               , foldr ETAbs (foldr EProofAbs e2 asmps) as
+               )
+
+        P.DPropGuards cases0 -> do
           asmps1 <- applySubstPreds asmps0
           t1     <- applySubst t0
           cases1 <- mapM checkPropGuardCase cases0
@@ -1115,25 +1274,14 @@ checkSigB b (Forall as asmps0 t0, validSchema) =
               -- necessarily hold
               recordWarning (NonExhaustivePropGuards name)
 
-          let schema = Forall as asmps1 t1
-
-          return Decl
-            { dName       = name
-            , dSignature  = schema
-            , dDefinition = DExpr
-                              (foldr ETAbs
-                                (foldr EProofAbs
-                                  (EPropGuards cases1 t1)
-                                asmps1)
-                              as)
-            , dPragmas    = P.bPragmas b
-            , dInfix      = P.bInfix b
-            , dFixity     = P.bFixity b
-            , dDoc        = P.bDoc b
-            }
-
-
-  where
+          pure ( asmps1
+               , t1
+               , foldr ETAbs
+                   (foldr EProofAbs
+                     (EPropGuards cases1 t1)
+                   asmps1)
+                 as
+               )
 
     checkBindDefExpr ::
       [Prop] -> [Prop] -> P.Expr Name -> InferM (Type, [Prop], Expr)
@@ -1183,8 +1331,8 @@ Given a DPropGuards of the form
 
 @
 f : {...} A
-f | (B1, B2) => ... 
-  | (C1, C2, C2) => ... 
+f | (B1, B2) => ...
+  | (C1, C2, C2) => ...
 @
 
 we check that it is exhaustive by trying to prove the following
@@ -1302,11 +1450,15 @@ checkTopDecls = mapM_ checkTopDecl
 
       P.TDNewtype tl ->
         do t <- checkNewtype (P.tlValue tl) (thing <$> P.tlDoc tl)
-           addNewtype t
+           addNominal t
+
+      P.TDEnum tl ->
+        do t <- checkEnum (P.tlValue tl) (thing <$> P.tlDoc tl)
+           addNominal t
 
       P.DPrimType tl ->
         do t <- checkPrimType (P.tlValue tl) (thing <$> P.tlDoc tl)
-           addPrimType t
+           addNominal t
 
 
       P.DInterfaceConstraint _ cs ->
@@ -1322,13 +1474,15 @@ checkTopDecls = mapM_ checkTopDecl
              do newSubmoduleScope (thing (P.mName m))
                                   (thing <$> P.tlDoc tl)
                                   (P.exportedDecls ds)
+                                  (P.mInScope m)
                 checkTopDecls ds
                 proveModuleTopLevel
                 endSubmodule
 
            P.FunctorInstance f as inst ->
              do let doc = thing <$> P.tlDoc tl
-                _ <- doFunctorInst (P.ImpNested <$> P.mName m) f as inst doc
+                _ <- doFunctorInst
+                  (P.ImpNested <$> P.mName m) f as inst (P.mInScope m) doc
                 pure ()
 
            P.InterfaceModule sig ->

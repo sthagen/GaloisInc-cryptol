@@ -11,6 +11,7 @@ module Cryptol.Project
   , run
   ) where
 
+import           Control.Monad                    (void,unless)
 import           Control.Monad.State
 import           Data.Bifunctor
 import qualified Data.ByteString                  as BS.Strict
@@ -176,9 +177,11 @@ run Config {..} = do
               lift $ fmap snd $
                 doLoadModule True False isrc mpath newModFp newIncFps pm $
                   Set.fromList $ map importedModule deps
-        getForeignFps :: Set FilePath -> LoadM (Set Fingerprint)
+        getForeignFps :: Map FilePath Bool -> LoadM (Set Fingerprint)
         getForeignFps fsrcPaths = lift $
-          Set.fromList <$> for (Set.toList fsrcPaths) \fsrcPath ->
+
+          -- XXX: exists?
+          Set.fromList <$> for (Map.keys fsrcPaths) \fsrcPath ->
             M.io (fingerprintFile fsrcPath) >>= \case
               Left ioe -> otherIOError fsrcPath ioe
               Right fp -> pure fp
@@ -221,7 +224,7 @@ run Config {..} = do
                 unless loaded do
                   (newModFp, newIncFps, fis) <- parseAndLoad isrc mpath
                   foreignFps <- getForeignFps $
-                    Set.unions $ map fiForeignDeps fis
+                    Map.unionsWith (||) (map fiForeignDeps fis)
                   let newFp = FullFingerprint
                         { moduleFingerprint = newModFp
                         , includeFingerprints = newIncFps

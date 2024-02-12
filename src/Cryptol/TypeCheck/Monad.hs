@@ -40,6 +40,7 @@ import           MonadLib hiding (mapM)
 import           Cryptol.ModuleSystem.Name
                     (FreshM(..),Supply,mkLocal,asLocal
                     , nameInfo, NameInfo(..),NameSource(..), nameTopModule)
+import           Cryptol.ModuleSystem.NamingEnv.Types
 import qualified Cryptol.ModuleSystem.Interface as If
 import           Cryptol.Parser.Position
 import qualified Cryptol.Parser.AST as P
@@ -64,8 +65,7 @@ data InferInput = InferInput
   { inpRange     :: Range             -- ^ Location of program source
   , inpVars      :: Map Name Schema   -- ^ Variables that are in scope
   , inpTSyns     :: Map Name TySyn    -- ^ Type synonyms that are in scope
-  , inpNewtypes  :: Map Name Newtype  -- ^ Newtypes in scope
-  , inpAbstractTypes :: Map Name AbstractType   -- ^ Abstract types in scope
+  , inpNominalTypes :: Map Name NominalType -- ^ Nominal types in scope
   , inpSignatures :: !(Map Name ModParamNames)  -- ^ Signatures in scope
 
   , inpTopModules    :: ModName -> Maybe (ModuleG (), If.IfaceG ())
@@ -129,8 +129,9 @@ runInferM info m0 =
 
      let env = Map.map ExtVar (inpVars info)
             <> Map.fromList
-              [ (ntConName nt, ExtVar (newtypeConType nt))
-              | nt <- Map.elems (inpNewtypes info)
+              [ (c, ExtVar t)
+              | nt <- Map.elems (inpNominalTypes info)
+              , (c,t) <- nominalTypeConTypes nt
               ]
             <> Map.map (ExtVar . mvpType) (mpnFuns allPs)
 
@@ -141,8 +142,7 @@ runInferM info m0 =
                          , iExtScope = (emptyModule ExternalScope)
                              { mTySyns           = inpTSyns info <>
                                                    mpnTySyn allPs
-                             , mNewtypes         = inpNewtypes info
-                             , mPrimTypes        = inpAbstractTypes info
+                             , mNominalTypes     = inpNominalTypes info
                              , mParamTypes       = mpnTypes allPs
                              , mParamFuns        = mpnFuns  allPs
                              , mParamConstraints = mpnConstraints allPs
@@ -611,7 +611,7 @@ checkParamKind tp flav k =
       TPPropSynParam _ -> starOrHashOrProp
       TPTySynParam _   -> starOrHash
       TPSchemaParam _  -> starOrHash
-      TPNewtypeParam _ -> starOrHash
+      TPNominalParam _ -> starOrHash
       TPPrimParam _    -> starOrHash
       TPUnifyVar       -> starOrHash
 
@@ -628,7 +628,6 @@ checkParamKind tp flav k =
         KNum  -> return ()
         KType -> return ()
         _ -> recordError (BadParameterKind tp k)
-
 
 -- | Generate a new free type variable.
 newTParam :: P.TParam Name -> TPFlavor -> Kind -> InferM TParam
@@ -788,12 +787,9 @@ lookupTParam x = IM $ asks $ find this . iTVars
 lookupTSyn :: Name -> InferM (Maybe TySyn)
 lookupTSyn x = Map.lookup x <$> getTSyns
 
--- | Lookup the definition of a newtype
-lookupNewtype :: Name -> InferM (Maybe Newtype)
-lookupNewtype x = Map.lookup x <$> getNewtypes
-
-lookupAbstractType :: Name -> InferM (Maybe AbstractType)
-lookupAbstractType x = Map.lookup x <$> getAbstractTypes
+-- | Lookup the definition of a nominal type
+lookupNominal :: Name -> InferM (Maybe NominalType)
+lookupNominal x = Map.lookup x <$> getNominalTypes
 
 -- | Lookup the kind of a parameter type
 lookupParamType :: Name -> InferM (Maybe ModTParam)
@@ -907,13 +903,9 @@ existVar x k =
 getTSyns :: InferM (Map Name TySyn)
 getTSyns = getScope mTySyns
 
--- | Returns the newtype declarations that are in scope.
-getNewtypes :: InferM (Map Name Newtype)
-getNewtypes = getScope mNewtypes
-
--- | Returns the abstract type declarations that are in scope.
-getAbstractTypes :: InferM (Map Name AbstractType)
-getAbstractTypes = getScope mPrimTypes
+-- | Returns the nominal type declarations that are in scope.
+getNominalTypes :: InferM (Map Name NominalType)
+getNominalTypes = getScope mNominalTypes
 
 -- | Returns the abstract function declarations
 getParamTypes :: InferM (Map Name ModTParam)
@@ -1006,16 +998,16 @@ newTopSignatureScope x = newScope (TopSignatureScope x)
 to initialize an empty module.  As we type check declarations they are
 added to this module's scope. -}
 newSubmoduleScope ::
-  Name -> Maybe Text -> ExportSpec Name -> InferM ()
-newSubmoduleScope x docs e =
+  Name -> Maybe Text -> ExportSpec Name -> NamingEnv -> InferM ()
+newSubmoduleScope x docs e inScope =
   do updScope \o -> o { mNested = Set.insert x (mNested o) }
      newScope (SubModule x)
-     updScope \m -> m { mDoc = docs, mExports = e }
+     updScope \m -> m { mDoc = docs, mExports = e, mInScope = inScope }
 
-newModuleScope :: P.ModName -> ExportSpec Name -> InferM ()
-newModuleScope x e =
+newModuleScope :: P.ModName -> ExportSpec Name -> NamingEnv -> InferM ()
+newModuleScope x e inScope =
   do newScope (MTopModule x)
-     updScope \m -> m { mDoc = Nothing, mExports = e }
+     updScope \m -> m { mDoc = Nothing, mExports = e, mInScope = inScope }
 
 -- | Update the current scope (first in the list). Assumes there is one.
 updScope :: (ModuleG ScopeName -> ModuleG ScopeName) -> InferM ()
@@ -1057,10 +1049,10 @@ endSubmodule =
                  , mParamConstraints = mParamConstraints y
                  , mParams           = mParams y
                  , mNested           = mNested y
+                 , mInScope          = mInScope y
 
                  , mTySyns      = add mTySyns
-                 , mNewtypes    = add mNewtypes
-                 , mPrimTypes   = add mPrimTypes
+                 , mNominalTypes = add mNominalTypes
                  , mDecls       = add mDecls
                  , mSignatures  = add mSignatures
                  , mSubmodules  = if isFun
@@ -1149,12 +1141,13 @@ getCurDecls =
       , mNested           = mempty
 
       , mTySyns           = uni mTySyns
-      , mNewtypes         = uni mNewtypes
-      , mPrimTypes        = uni mPrimTypes
+      , mNominalTypes     = uni mNominalTypes
       , mDecls            = uni mDecls
       , mSubmodules       = uni mSubmodules
       , mFunctors         = uni mFunctors
       , mSignatures       = uni mSignatures
+
+      , mInScope          = uni mInScope
       }
     where
     uni f = f m1 <> f m2
@@ -1175,18 +1168,12 @@ addTySyn t =
      checkTShadowing "synonym" x
      updScope \r -> r { mTySyns = Map.insert x t (mTySyns r) }
 
-addNewtype :: Newtype -> InferM ()
-addNewtype t =
-  do updScope \r -> r { mNewtypes = Map.insert (ntName t) t (mNewtypes r) }
-     IM $ sets_ \rw -> rw { iBindTypes = Map.insert (ntConName t)
-                                                    (newtypeConType t)
-                                                    (iBindTypes rw) }
-
-addPrimType :: AbstractType -> InferM ()
-addPrimType t =
-  updScope \r ->
-    r { mPrimTypes = Map.insert (atName t) t (mPrimTypes r) }
-
+addNominal :: NominalType -> InferM ()
+addNominal t =
+  do updScope \r -> r { mNominalTypes = Map.insert (ntName t) t (mNominalTypes r) }
+     let cons = nominalTypeConTypes t
+         ins  = uncurry Map.insert
+     IM $ sets_ \rw -> rw { iBindTypes = foldr ins (iBindTypes rw) cons }
 
 addParamType :: ModTParam -> InferM ()
 addParamType a =
@@ -1354,15 +1341,12 @@ kNewType src k =
 kLookupTSyn :: Name -> KindM (Maybe TySyn)
 kLookupTSyn x = kInInferM $ lookupTSyn x
 
--- | Lookup the definition of a newtype.
-kLookupNewtype :: Name -> KindM (Maybe Newtype)
-kLookupNewtype x = kInInferM $ lookupNewtype x
+-- | Lookup the definition of a nominal type.
+kLookupNominal :: Name -> KindM (Maybe NominalType)
+kLookupNominal = kInInferM . lookupNominal
 
 kLookupParamType :: Name -> KindM (Maybe ModTParam)
 kLookupParamType x = kInInferM (lookupParamType x)
-
-kLookupAbstractType :: Name -> KindM (Maybe AbstractType)
-kLookupAbstractType x = kInInferM $ lookupAbstractType x
 
 kExistTVar :: Name -> Kind -> KindM Type
 kExistTVar x k = kInInferM $ existVar x k

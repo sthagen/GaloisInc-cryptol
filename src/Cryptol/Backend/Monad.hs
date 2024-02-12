@@ -422,6 +422,7 @@ data EvalError
   | BadRoundingMode Integer              -- ^ Invalid rounding mode
   | BadValue String                      -- ^ Value outside the domain of a partial function.
   | NoMatchingPropGuardCase String    -- ^ No prop guard holds for the given type variables.
+  | NoMatchingConstructor (Maybe String) -- ^ Missing `case` alternative
   | FFINotSupported Name                 -- ^ Foreign function cannot be called
   | FFITypeNumTooBig Name TParam Integer -- ^ Number passed to foreign function
                                          --   as a type argument is too large
@@ -447,15 +448,20 @@ instance PP EvalError where
     NoMatchingPropGuardCase msg -> text $ "No matching constraint guard; " ++ msg
     FFINotSupported x -> vcat
       [ text "cannot call foreign function" <+> pp x
-      , text "FFI calls are not supported in this context"
-      , text "If you are trying to evaluate an expression, try rebuilding"
-      , text "  Cryptol with FFI support enabled."
+      , text "No foreign implementation is loaded,"
+      , text "  or FFI calls are not supported in this context."
       ]
     FFITypeNumTooBig f p n -> vcat
       [ text "numeric type argument to foreign function is too large:"
         <+> integer n
       , text "in type parameter" <+> pp p <+> "of function" <+> pp f
       , text "type arguments must fit in a C `size_t`" ]
+    NoMatchingConstructor mbCon -> vcat
+      [ "Missing `case` alternative" <+> con <.> "."
+      ]
+      where con = case mbCon of
+                    Just c -> "for constructor" <+> backticks (text c)
+                    Nothing -> mempty
 
 instance Show EvalError where
   show = show . pp

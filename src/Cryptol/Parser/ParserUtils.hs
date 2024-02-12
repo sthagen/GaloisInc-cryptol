@@ -52,7 +52,7 @@ import Cryptol.Utils.Ident( packModName,packIdent,modNameChunks
                           , modNameArg, modNameIfaceMod
                           , modNameToText, mainModName, modNameIsNormal
                           , modNameToNormalModName
-                          , unpackIdent
+                          , unpackIdent, isUpperIdent
                           )
 import Cryptol.Utils.PP
 import Cryptol.Utils.Panic
@@ -516,6 +516,12 @@ exportNewtype e d n = TDNewtype TopLevel { tlExport = e
                                          , tlDoc    = d
                                          , tlValue  = n }
 
+exportEnum ::
+  ExportType -> Maybe (Located Text) -> EnumDecl PName -> TopDecl PName
+exportEnum e d n = TDEnum TopLevel { tlExport = e
+                                   , tlDoc = d
+                                   , tlValue = n }
+
 exportModule :: Maybe (Located Text) -> NestedModule PName -> TopDecl PName
 exportModule mbDoc m = DModule TopLevel { tlExport = Public
                                         , tlDoc    = mbDoc
@@ -554,6 +560,7 @@ changeExport e = map change
       Decl d                  -> Decl      d { tlExport = e }
       DPrimType t             -> DPrimType t { tlExport = e }
       TDNewtype n             -> TDNewtype n { tlExport = e }
+      TDEnum n                -> TDEnum    n { tlExport = e }
       DModule m               -> DModule   m { tlExport = e }
       DModParam {}            -> decl
       Include{}               -> decl
@@ -590,6 +597,66 @@ mkNewtype ::
 mkNewtype thead def =
   do (nm,params) <- typeToDecl thead
      pure (Newtype nm params (thing nm) (thing def))
+
+mkEnumDecl ::
+  Type PName ->
+  [ TopLevel (EnumCon PName) ] {- ^ Reversed -} ->
+  ParseM (EnumDecl PName)
+mkEnumDecl thead def =
+  do (nm,params) <- typeToDecl thead
+     mapM_ reportRepeated
+        (Map.toList (Map.fromListWith (++) [ (thing k,[srcRange k])
+                                           | k <- map (ecName . tlValue) def ]))
+     pure EnumDecl
+            { eName   = nm
+            , eParams = params
+            , eCons   = reverse def
+            }
+  where
+  reportRepeated (i,xs) =
+    case xs of
+      l : ls@(_ : _) ->
+        errorMessage l
+          ( ("Multiple declarations for " ++ show (backticks (pp i)))
+          : [ "Other declaration: " ++ show (pp x) | x <- ls ]
+          )
+
+      _ -> pure ()
+
+mkConDecl ::
+  Maybe (Located Text) -> ExportType ->
+  Type PName -> ParseM (TopLevel (EnumCon PName))
+mkConDecl mbDoc expT ty =
+  do con <- go Nothing ty
+     pure TopLevel { tlExport = expT, tlDoc = mbDoc, tlValue = con }
+  where
+  go mbLoc t =
+    case t of
+      TLocated t1 r -> go (Just r) t1
+      TUser n ts ->
+        case n of
+          UnQual i
+            | isUpperIdent i ->
+              pure EnumCon { ecName = Located (getL mbLoc) (UnQual i)
+                           , ecFields = ts
+                           }
+            | otherwise ->
+              errorMessage (getL mbLoc)
+                 [ "Malformed constructor declaration."
+                 , "The constructor name should start with a capital letter."
+                 ]
+
+          _ -> errorMessage (getL mbLoc)
+                 [ "Malformed constructor declaration."
+                 , "The constructor name may not be qualified."
+                 ]
+      _ -> errorMessage (getL mbLoc) [ "Malformed constructor declaration." ]
+
+  getL mb =
+    case mb of
+      Just r  -> r
+      Nothing -> panic "mkConDecl" ["Missing type location"]
+
 
 typeToDecl :: Type PName -> ParseM (Located PName, [TParam PName])
 typeToDecl ty0 =
@@ -696,7 +763,7 @@ mkProperty :: LPName -> [Pattern PName] -> Expr PName -> Decl PName
 mkProperty f ps e = at (f,e) $
                     DBind Bind { bName       = f
                                , bParams     = reverse ps
-                               , bDef        = at e (Located emptyRange (DExpr e))
+                               , bDef        = at e (Located emptyRange (exprDef e))
                                , bSignature  = Nothing
                                , bPragmas    = [PragmaProperty]
                                , bMono       = False
@@ -712,7 +779,7 @@ mkIndexedDecl ::
 mkIndexedDecl f (ps, ixs) e =
   DBind Bind { bName       = f
              , bParams     = reverse ps
-             , bDef        = at e (Located emptyRange (DExpr rhs))
+             , bDef        = at e (Located emptyRange (exprDef rhs))
              , bSignature  = Nothing
              , bPragmas    = []
              , bMono       = False
@@ -739,7 +806,7 @@ mkPropGuardsDecl f (ps, ixs) guards =
      pure $
        DBind Bind { bName       = f
                   , bParams     = reverse ps
-                  , bDef        = Located (srcRange f) (DPropGuards gs)
+                  , bDef        = Located (srcRange f) (DImpl (DPropGuards gs))
                   , bSignature  = Nothing
                   , bPragmas    = []
                   , bMono       = False
@@ -769,6 +836,34 @@ mkIf ifThens theElse = foldr addIfThen theElse ifThens
     where
     addIfThen (cond, doexpr) elseExpr = EIf cond doexpr elseExpr
 
+mkPVar :: Located PName -> Pattern PName
+mkPVar p =
+  case thing p of
+    UnQual i | isInfixIdent i || not (isUpperIdent i) -> PVar p
+    _ -> PCon p []
+
+mkIPat :: Pattern PName -> ParseM (Pattern PName)
+mkIPat pat =
+  case pat of
+    PVar {}      -> pure pat
+    PWild        -> pure pat
+    PTuple ps    -> PTuple <$> traverse mkIPat ps
+    PRecord rp   -> PRecord <$> traverseRecordMap upd rp
+      where upd _ (x,y) = (,) x <$> mkIPat y
+    PList ps     -> PList <$> traverse mkIPat ps
+    PTyped p t   -> (`PTyped` t) <$> mkIPat p
+    PSplit p1 p2 -> PSplit <$> mkIPat p1 <*> mkIPat p2
+    PLocated p r -> (`PLocated` r) <$> mkIPat p
+    PCon n ps    ->
+      case ps of
+        [] | UnQual {} <- thing n -> pure (PVar n)
+        _ -> errorMessage (srcRange n)
+               [ "Unexpected constructor pattern."
+               , "Constructors patterns may be used only in `case` expressions."
+               ]
+
+
+
 mkPrimDecl :: Maybe (Located Text) -> LPName -> Schema PName -> [TopDecl PName]
 mkPrimDecl = mkNoImplDecl DPrim
 
@@ -781,7 +876,11 @@ mkForeignDecl mbDoc nm ty =
             [ "`" ++ txt ++ "` is not a valid foreign name."
             , "The name should contain only alpha-numeric characters or '_'."
             ])
-     pure (mkNoImplDecl DForeign mbDoc nm ty)
+     -- We do allow optional cryptol implementations of foreign functions, these
+     -- will be merged with this binding in the NoPat pass. In the parser they
+     -- are just treated as a completely separate (non-foreign) binding with the
+     -- same name.
+     pure (mkNoImplDecl (DForeign Nothing) mbDoc nm ty)
   where
   isOk c = c == '_' || isAlphaNum c
 
@@ -795,7 +894,7 @@ mkForeignDecl mbDoc nm ty =
 mkNoImplDecl :: BindDef PName
   -> Maybe (Located Text) -> LPName -> Schema PName -> [TopDecl PName]
 mkNoImplDecl def mbDoc ln sig =
-  [ exportDecl mbDoc Public
+  [ exportDecl Nothing Public
     $ DBind Bind { bName      = ln
                  , bParams    = []
                  , bDef       = at sig (Located emptyRange def)
@@ -807,7 +906,7 @@ mkNoImplDecl def mbDoc ln sig =
                  , bDoc       = Nothing
                  , bExport    = Public
                  }
-  , exportDecl Nothing Public
+  , exportDecl mbDoc Public
     $ DSignature [ln] sig
   ]
 
@@ -965,6 +1064,7 @@ mkProp ty =
 mkModule :: Located ModName -> [TopDecl PName] -> Module PName
 mkModule nm ds = Module { mName = nm
                         , mDef = NormalModule ds
+                        , mInScope = mempty
                         }
 
 mkNested :: Module PName -> ParseM (NestedModule PName)
@@ -983,8 +1083,9 @@ mkSigDecl doc (nm,sig) =
   TopLevel { tlExport = Public
            , tlDoc    = doc
            , tlValue  = NestedModule
-                        Module { mName = nm
-                               , mDef  = InterfaceModule sig
+                        Module { mName    = nm
+                               , mDef     = InterfaceModule sig
+                               , mInScope = mempty
                                }
            }
 
@@ -1069,8 +1170,9 @@ mkModuleInstanceAnon :: Located ModName ->
                       [TopDecl PName] ->
                       Module PName
 mkModuleInstanceAnon nm fun ds =
-  Module { mName  = nm
-         , mDef   = FunctorInstance fun (DefaultInstAnonArg ds) mempty
+  Module { mName    = nm
+         , mDef     = FunctorInstance fun (DefaultInstAnonArg ds) mempty
+         , mInScope = mempty
          }
 
 mkModuleInstance ::
@@ -1079,8 +1181,9 @@ mkModuleInstance ::
   ModuleInstanceArgs PName ->
   Module PName
 mkModuleInstance m f as =
-  Module { mName = m
-         , mDef  = FunctorInstance f as emptyModuleInstance
+  Module { mName    = m
+         , mDef     = FunctorInstance f as emptyModuleInstance
+         , mInScope = mempty
          }
 
 
@@ -1202,8 +1305,9 @@ mkTopMods = desugarMod
 
 mkTopSig :: Located ModName -> Signature PName -> [Module PName]
 mkTopSig nm sig =
-  [ Module { mName = nm
-           , mDef  = InterfaceModule sig
+  [ Module { mName    = nm
+           , mDef     = InterfaceModule sig
+           , mInScope = mempty
            }
   ]
 
@@ -1247,7 +1351,8 @@ desugarMod mo =
          let i      = mkAnon AnonArg (thing (mName mo))
              nm     = Located { srcRange = srcRange (mName mo), thing = i }
              as'    = DefaultInstArg (ModuleArg . toImpName <$> nm)
-         pure [ Module { mName = nm, mDef  = NormalModule lds' }
+         pure [ Module
+                  { mName = nm, mDef  = NormalModule lds', mInScope = mempty }
               , mo { mDef = FunctorInstance f as' mempty }
               ]
 
@@ -1297,6 +1402,7 @@ desugarTopDs ownerName = go emptySig
           do let nm = mkAnon AnonIfaceMod <$> ownerName
              pure ( [ Module { mName = nm
                              , mDef = InterfaceModule sig
+                             , mInScope = mempty
                              }
                      ]
                   , [ DModParam
@@ -1340,9 +1446,10 @@ desugarInstImport ::
   ParseM [TopDecl PName]
 desugarInstImport i inst =
   do ms <- desugarMod
-           Module { mName = i { thing = iname }
-                  , mDef  = FunctorInstance
-                              (iModule <$> i) inst emptyModuleInstance
+           Module { mName    = i { thing = iname }
+                  , mDef     = FunctorInstance
+                                 (iModule <$> i) inst emptyModuleInstance
+                  , mInScope = mempty
                   }
      pure (DImport (newImp <$> i) : map modTop ms)
 

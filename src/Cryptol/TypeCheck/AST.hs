@@ -36,6 +36,7 @@ import Cryptol.Utils.Panic(panic)
 import Cryptol.Utils.Ident (Ident,isInfixIdent,ModName,PrimIdent,prelPrim)
 import Cryptol.Parser.Position(Located,Range,HasLoc(..))
 import Cryptol.ModuleSystem.Name
+import Cryptol.ModuleSystem.NamingEnv.Types
 import Cryptol.ModuleSystem.Interface
 import Cryptol.ModuleSystem.Exports(ExportSpec(..)
                                    , isExportedBind, isExportedType, isExported)
@@ -106,11 +107,14 @@ data ModuleG mname =
 
                       -- These have everything from this module and all submodules
                      , mTySyns           :: Map Name TySyn
-                     , mNewtypes         :: Map Name Newtype
-                     , mPrimTypes        :: Map Name AbstractType
+                     , mNominalTypes     :: Map Name NominalType
                      , mDecls            :: [DeclGroup]
                      , mSubmodules       :: Map Name (IfaceNames Name)
                      , mSignatures       :: !(Map Name ModParamNames)
+
+                     , mInScope          :: NamingEnv
+                       -- ^ Things in scope at the top level.
+                       --   Submodule in-scope information is in 'mSubmodules'.
                      } deriving (Show, Generic, NFData)
 
 emptyModule :: mname -> ModuleG mname
@@ -128,28 +132,34 @@ emptyModule nm =
     , mNested           = mempty
 
     , mTySyns           = mempty
-    , mNewtypes         = mempty
-    , mPrimTypes        = mempty
+    , mNominalTypes     = mempty
     , mDecls            = mempty
     , mFunctors         = mempty
     , mSubmodules       = mempty
     , mSignatures       = mempty
+
+    , mInScope          = mempty
     }
 
 -- | Find all the foreign declarations in the module and return their names and FFIFunTypes.
 findForeignDecls :: ModuleG mname -> [(Name, FFIFunType)]
-findForeignDecls = mapMaybe getForeign . mDecls
-  where getForeign (NonRecursive Decl { dName, dDefinition = DForeign ffiType })
-          = Just (dName, ffiType)
-        -- Recursive DeclGroups can't have foreign decls
-        getForeign _ = Nothing
+findForeignDecls = mapMaybe getForeign . concatMap groupDecls . mDecls
+  where getForeign d =
+          case dDefinition d of
+            DForeign ffiType _ -> Just (dName d, ffiType)
+            _                  -> Nothing
 
--- | Find all the foreign declarations that are in functors.
+-- | Find all the foreign declarations that are in functors, including in the
+-- top-level module itself if it is a functor.
 -- This is used to report an error
 findForeignDeclsInFunctors :: ModuleG mname -> [Name]
-findForeignDeclsInFunctors = concatMap fromM . Map.elems . mFunctors
+findForeignDeclsInFunctors mo
+  | isParametrizedModule mo = fromM mo
+  | otherwise               = findInSubs mo
   where
-  fromM m = map fst (findForeignDecls m) ++ findForeignDeclsInFunctors m
+  findInSubs :: ModuleG mname -> [Name]
+  findInSubs = concatMap fromM . Map.elems . mFunctors
+  fromM m = map fst (findForeignDecls m) ++ findInSubs m
 
 
 
@@ -172,6 +182,11 @@ data Expr   = EList [Expr] Type         -- ^ List value (with type of elements)
                                            --   The included type gives the type of the record being updated
 
             | EIf Expr Expr Expr        -- ^ If-then-else
+            | ECase Expr (Map Ident CaseAlt) (Maybe CaseAlt)
+              -- ^ Case expression. The keys are the name of constructors
+              -- `Nothing` for default case, the expresssions are what to
+              -- do if the constructor matches.  If the constructor binds
+              -- variables, then then the expr should be `EAbs`
             | EComp Type Type Expr [[Match]]
                                         -- ^ List comprehensions
                                         --   The types cache the length of the
@@ -211,6 +226,10 @@ data Expr   = EList [Expr] Type         -- ^ List value (with type of elements)
 
               deriving (Show, Generic, NFData)
 
+-- | Used for case expressions.  Similar to a lambda, the variables
+-- are bound by the value examined in the case.
+data CaseAlt = CaseAlt [(Name,Type)] Expr
+  deriving (Show, Generic, NFData)
 
 data Match  = From Name Type Type Expr
                                   -- ^ Type arguments are the length and element
@@ -238,7 +257,9 @@ data Decl       = Decl { dName        :: !Name
                        } deriving (Generic, NFData, Show)
 
 data DeclDef    = DPrim
-                | DForeign FFIFunType
+                -- | Foreign functions can have an optional cryptol
+                -- implementation
+                | DForeign FFIFunType (Maybe Expr)
                 | DExpr Expr
                   deriving (Show, Generic, NFData)
 
@@ -294,9 +315,17 @@ instance PP (WithNames Expr) where
                     $ sep [ text "if"   <+> ppW e1
                           , text "then" <+> ppW e2
                           , text "else" <+> ppW e3 ]
+      ECase e arms dflt ->
+        optParens (prec > 0) $
+        vcat [ "case" <+> pp e <+> "of"
+             , indent 2 (vcat ppArms $$ ppDflt)
+             ]
+        where
+        ppArms  = [ pp i <+> pp c | (i,c) <- reverse (Map.toList arms) ]
+        ppDflt  = maybe mempty pp dflt
 
       EComp _ _ e mss -> let arm ms = text "|" <+> commaSep (map ppW ms)
-                          in brackets $ ppW e <+> (align (vcat (map arm mss)))
+                          in brackets $ ppW e <+> align (vcat (map arm mss))
 
       EVar x        -> ppPrefixName x
 
@@ -343,6 +372,10 @@ instance PP (WithNames Expr) where
     where
     ppW x   = ppWithNames nm x
     ppWP x  = ppWithNamesPrec nm x
+
+instance PP CaseAlt where
+  ppPrec _ (CaseAlt xs e) = hsep (map ppV xs) <+> "->" <+> pp e
+    where ppV (x,t) = parens (pp x <.> ":" <+> pp t)
 
 ppLam :: NameMap -> Int -> [TParam] -> [Prop] -> [(Name,Type)] -> Expr -> Doc
 ppLam nm prec [] [] [] e = nest 2 (ppWithNamesPrec nm prec e)
@@ -456,9 +489,12 @@ instance PP (WithNames Decl) where
       ++ [ nest 2 (sep [pp dName <+> text "=", ppWithNames nm dDefinition]) ]
 
 instance PP (WithNames DeclDef) where
-  ppPrec _ (WithNames DPrim _)        = text "<primitive>"
-  ppPrec _ (WithNames (DForeign _) _) = text "<foreign>"
-  ppPrec _ (WithNames (DExpr e) nm)   = ppWithNames nm e
+  ppPrec _ (WithNames DPrim _) = text "<primitive>"
+  ppPrec _ (WithNames (DForeign _ me) nm) =
+    case me of
+      Just e -> text "(foreign)" <+> ppWithNames nm e
+      Nothing -> text "<foreign>"
+  ppPrec _ (WithNames (DExpr e) nm) = ppWithNames nm e
 
 instance PP Decl where
   ppPrec = ppWithNamesPrec IntMap.empty

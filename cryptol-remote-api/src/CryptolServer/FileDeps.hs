@@ -7,6 +7,7 @@ module CryptolServer.FileDeps
   ) where
 
 import Data.Text (Text)
+import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 
@@ -69,7 +70,7 @@ instance ToJSON FileDeps where
       , "fingerprint" .= fingerprintHexString (fiFingerprint fi)
       , "includes"    .= Map.keys (fiIncludeDeps fi)
       , "imports"     .= map (show . pp) (Set.toList (fiImportDeps fi))
-      , "foreign"     .= Set.toList (fiForeignDeps fi)
+      , "foreign"     .= Map.toList (fiForeignDeps fi)
       ]
     where
     fi = fdInfo fd

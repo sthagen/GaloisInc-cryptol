@@ -11,7 +11,6 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -28,9 +27,10 @@ module Cryptol.Eval (
   , emptyEnv
   , evalExpr
   , evalDecls
-  , evalNewtypeDecls
+  , evalNominalDecls
   , evalSel
   , evalSetSel
+  , evalEnumCon
   , EvalError(..)
   , EvalErrorEx(..)
   , Unsupported(..)
@@ -53,7 +53,7 @@ import Cryptol.ModuleSystem.Name
 import Cryptol.Parser.Position
 import Cryptol.Parser.Selector(ppSelector)
 import Cryptol.TypeCheck.AST
-import Cryptol.TypeCheck.Solver.InfNat(Nat'(..))
+import Cryptol.TypeCheck.Solver.InfNat(Nat'(..),nMul)
 import Cryptol.Utils.Ident
 import Cryptol.Utils.Panic (panic)
 import Cryptol.Utils.PP
@@ -62,6 +62,8 @@ import Cryptol.Utils.RecordMap
 import           Control.Monad
 import           Data.List
 import           Data.Maybe
+import           Data.Vector(Vector)
+import qualified Data.Vector as Vector
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import           Data.Semigroup
@@ -96,7 +98,8 @@ moduleEnv ::
   Module         {- ^ Module containing declarations to evaluate -} ->
   GenEvalEnv sym {- ^ Environment to extend -} ->
   SEval sym (GenEvalEnv sym)
-moduleEnv sym m env = evalDecls sym (mDecls m) =<< evalNewtypeDecls sym (mNewtypes m) env
+moduleEnv sym m env = evalDecls sym (mDecls m) =<<
+                          evalNominalDecls sym (mNominalTypes m) env
 
 {-# SPECIALIZE evalExpr ::
   (?range :: Range, ConcPrims) =>
@@ -160,6 +163,17 @@ evalExpr sym env expr = case expr of
   EIf c t f -> {-# SCC "evalExpr->EIf" #-} do
      b <- fromVBit <$> eval c
      iteValue sym b (eval t) (eval f)
+
+  ECase e as d -> {-# SCC "evalExpr->ECase" #-} do
+    val <- eval e
+    let (con,fs) = fromVEnum val
+    caseValue sym con fs
+      CaseCont
+        { caseCon = evalCase <$> as
+        , caseDflt =
+            do rhs <- d
+               pure (evalCase rhs [pure val])
+        }
 
   EComp n t h gs -> {-# SCC "evalExpr->EComp" #-} do
       let len  = evalNumType (envTypes env) n
@@ -230,6 +244,10 @@ evalExpr sym env expr = case expr of
   {-# INLINE eval #-}
   eval = evalExpr sym env
   ppV = ppValue sym defaultPPOpts
+  evalCase (CaseAlt xs e) vs =
+    do let addVar env' ((x,_),v) = bindVar sym x v env'
+       newEnv <- foldM addVar env (zip xs vs)
+       evalExpr sym newEnv e
 
 -- | Checks whether an evaluated `Prop` holds
 checkProp :: Prop -> Bool
@@ -296,40 +314,65 @@ cacheCallStack sym v = case v of
 
 -- Newtypes --------------------------------------------------------------------
 
-{-# SPECIALIZE evalNewtypeDecls ::
+{-# SPECIALIZE evalNominalDecls ::
   ConcPrims =>
   Concrete ->
-  Map.Map Name Newtype ->
+  Map.Map Name NominalType ->
   GenEvalEnv Concrete ->
   SEval Concrete (GenEvalEnv Concrete)
   #-}
 
-evalNewtypeDecls ::
+evalNominalDecls ::
   EvalPrims sym =>
   sym ->
-  Map.Map Name Newtype ->
+  Map.Map Name NominalType ->
   GenEvalEnv sym ->
   SEval sym (GenEvalEnv sym)
-evalNewtypeDecls sym nts env = foldM (flip (evalNewtypeDecl sym)) env $ Map.elems nts
+evalNominalDecls sym nts env = foldM (flip (evalNominalDecl sym)) env $ Map.elems nts
 
 -- | Introduce the constructor function for a newtype.
-evalNewtypeDecl ::
+evalNominalDecl ::
   EvalPrims sym =>
   sym ->
-  Newtype ->
+  NominalType ->
   GenEvalEnv sym ->
   SEval sym (GenEvalEnv sym)
-evalNewtypeDecl _sym nt = pure . bindVarDirect (ntConName nt) (foldr tabs con (ntParams nt))
+evalNominalDecl sym nt env0 =
+  case ntDef nt of
+    Struct c -> pure (bindVarDirect (ntConName c) (mkCon structCon) env0)
+    Enum cs  -> foldM enumCon env0 cs
+    Abstract -> pure env0
   where
-  con           = PFun PPrim
+  structCon = PFun PPrim
+  mkCon c   = foldr tabs c (ntParams nt)
+
+  enumCon env c =
+    do con <- evalEnumCon sym (nameIdent (ecName c)) (ecNumber c)
+       let done        = PVal . con . Vector.fromList . reverse
+           fu _t f xs  = PFun (\v -> f (v:xs))
+       pure (bindVarDirect (ecName c)
+                           (mkCon (foldr fu done (ecFields c) [])) env)
 
   tabs tp body =
     case tpKind tp of
       KType -> PTyPoly  (\ _ -> body)
       KNum  -> PNumPoly (\ _ -> body)
-      k -> evalPanic "evalNewtypeDecl" ["illegal newtype parameter kind", show (pp k)]
+      k ->
+        evalPanic "evalNominalDecl" [ "illegal newtype parameter kind"
+                                    , show (pp k)
+                                    ]
 
-{-# INLINE evalNewtypeDecl #-}
+{-# INLINE evalNominalDecl #-}
+
+-- | Make the function for a known constructor
+evalEnumCon ::
+  Backend sym =>
+  sym -> Ident -> Int ->
+  SEval sym (Vector (SEval sym (GenValue sym)) -> GenValue sym)
+evalEnumCon sym i n =
+  do tag <- integerLit sym (toInteger n)
+     pure (VEnum tag . IntMap.singleton n . ConInfo i)
+
 
 
 -- Declarations ----------------------------------------------------------------
@@ -368,7 +411,16 @@ evalDeclGroup ::
   SEval sym (GenEvalEnv sym)
 evalDeclGroup sym env dg = do
   case dg of
-    Recursive ds -> do
+    Recursive ds0 -> do
+      let ds = filter shouldEval ds0
+          -- If there are foreign declarations, we should only evaluate them if
+          -- they are not already bound in the environment by the previous
+          -- Cryptol.Eval.FFI.evalForeignDecls pass.
+          shouldEval d =
+            case (dDefinition d, lookupVar (dName d) env) of
+              (DForeign _ _, Just _) -> False
+              _                      -> True
+
       -- declare a "hole" for each declaration
       -- and extend the evaluation environment
       holes <- mapM (declHole sym) ds
@@ -432,14 +484,19 @@ declHole ::
   sym -> Decl -> SEval sym (Name, Schema, SEval sym (GenValue sym), SEval sym (GenValue sym) -> SEval sym ())
 declHole sym d =
   case dDefinition d of
-    DPrim      -> evalPanic "Unexpected primitive declaration in recursive group"
-                            [show (ppLocName nm)]
-    DForeign _ -> evalPanic "Unexpected foreign declaration in recursive group"
-                            [show (ppLocName nm)]
-    DExpr _    -> do
-      (hole, fill) <- sDeclareHole sym msg
-      return (nm, sch, hole, fill)
+    DPrim -> evalPanic "Unexpected primitive declaration in recursive group"
+                       [show (ppLocName nm)]
+    DForeign _ me ->
+      case me of
+        Nothing -> evalPanic
+          "Unexpected foreign declaration with no cryptol implementation in recursive group"
+          [show (ppLocName nm)]
+        Just _ -> doHole
+    DExpr _ -> doHole
   where
+  doHole = do
+    (hole, fill) <- sDeclareHole sym msg
+    return (nm, sch, hole, fill)
   nm = dName d
   sch = dSignature d
   msg = unwords ["while evaluating", show (pp nm)]
@@ -470,17 +527,22 @@ evalDecl sym renv env d = do
         Just (Left ex) -> bindVar sym (dName d) (evalExpr sym renv ex) env
         Nothing        -> bindVar sym (dName d) (cryNoPrimError sym (dName d)) env
 
-    DForeign _ -> do
+    DForeign _ me -> do
       -- Foreign declarations should have been handled by the previous
       -- Cryptol.Eval.FFI.evalForeignDecls pass already, so they should already
-      -- be in the environment. If not, then either Cryptol was not compiled
-      -- with FFI support enabled, or we are in a non-Concrete backend. In that
-      -- case, we just bind the name to an error computation which will raise an
-      -- error if we try to evaluate it.
+      -- be in the environment. If not, then either the foreign source was
+      -- missing, Cryptol was not compiled with FFI support enabled, or we are
+      -- in a non-Concrete backend. In that case, we bind the name to the
+      -- fallback cryptol implementation if present, or otherwise to an error
+      -- computation which will raise an error if we try to evaluate it.
       case lookupVar (dName d) env of
         Just _  -> pure env
-        Nothing -> bindVar sym (dName d)
-          (raiseError sym $ FFINotSupported $ dName d) env
+        Nothing -> bindVar sym (dName d) val env
+          where
+          val =
+            case me of
+              Just e -> evalExpr sym renv e
+              Nothing -> raiseError sym $ FFINotSupported $ dName d
 
     DExpr e -> bindVar sym (dName d) (evalExpr sym renv e) env
 
@@ -689,23 +751,23 @@ branchEnvs ::
   ListEnv sym ->
   [Match] ->
   SEval sym (ListEnv sym)
-branchEnvs sym env matches = snd <$> foldM (evalMatch sym) (1, env) matches
+branchEnvs sym env matches = snd <$> foldM (evalMatch sym) (Nat 1, env) matches
 
 {-# SPECIALIZE evalMatch ::
   (?range :: Range, ConcPrims) =>
   Concrete ->
-  (Integer, ListEnv Concrete) ->
+  (Nat', ListEnv Concrete) ->
   Match ->
-  SEval Concrete (Integer, ListEnv Concrete)
+  SEval Concrete (Nat', ListEnv Concrete)
   #-}
 
 -- | Turn a match into the list of environments it represents.
 evalMatch ::
   (?range :: Range, EvalPrims sym) =>
   sym ->
-  (Integer, ListEnv sym) ->
+  (Nat', ListEnv sym) ->
   Match ->
-  SEval sym (Integer, ListEnv sym)
+  SEval sym (Nat', ListEnv sym)
 evalMatch sym (lsz, lenv) m = seq lsz $ case m of
 
   -- many envs
@@ -714,7 +776,7 @@ evalMatch sym (lsz, lenv) m = seq lsz $ case m of
       -- Select from a sequence of finite length.  This causes us to 'stutter'
       -- through our previous choices `nLen` times.
       Nat nLen -> do
-        vss <- memoMap sym (Nat lsz) $ indexSeqMap $ \i -> evalExpr sym (evalListEnv lenv i) expr
+        vss <- memoMap sym lsz $ indexSeqMap $ \i -> evalExpr sym (evalListEnv lenv i) expr
         let stutter xs = \i -> xs (i `div` nLen)
         let lenv' = lenv { leVars = fmap stutter (leVars lenv) }
         let vs i = do let (q, r) = i `divMod` nLen
@@ -723,27 +785,21 @@ evalMatch sym (lsz, lenv) m = seq lsz $ case m of
                         VSeq _ xs'  -> lookupSeqMap xs' r
                         VStream xs' -> lookupSeqMap xs' r
                         _           -> evalPanic "evalMatch" ["Not a list value"]
-        return (lsz * nLen, bindVarList n vs lenv')
+        return (nMul lsz len, bindVarList n vs lenv')
 
-      -- Select from a sequence of infinite length.  Note that this means we
-      -- will never need to backtrack into previous branches.  Thus, we can convert
-      -- `leVars` elements of the comprehension environment into `leStatic` elements
-      -- by selecting out the 0th element.
+      {- Select from a sequence of infinite length.  Note that only the
+         first generator in a sequence of generators may have infinite length,
+         so we can just evaluate it once an for all (i.e., it does not change
+         on each loop iteration, as it may happen in the finite case). -}
       Inf -> do
-        let allvars = IntMap.union (fmap (Right . ($ 0)) (leVars lenv)) (leStatic lenv)
-        let lenv' = lenv { leVars   = IntMap.empty
-                         , leStatic = allvars
-                         }
-        let env   = EvalEnv allvars (leTypes lenv)
+        let env = EvalEnv (leStatic lenv) (leTypes lenv)
         xs <- evalExpr sym env expr
         let vs i = case xs of
                      VWord _ w   -> VBit <$> indexWordValue sym w i
                      VSeq _ xs'  -> lookupSeqMap xs' i
                      VStream xs' -> lookupSeqMap xs' i
                      _           -> evalPanic "evalMatch" ["Not a list value"]
-        -- Selecting from an infinite list effectively resets the length of the
-        -- list environment, so return 1 as the length
-        return (1, bindVarList n vs lenv')
+        return (Inf, bindVarList n vs lenv)
 
     where
       len  = evalNumType (leTypes lenv) l
@@ -755,6 +811,6 @@ evalMatch sym (lsz, lenv) m = seq lsz $ case m of
     where
       f env =
           case dDefinition d of
-            DPrim      -> evalPanic "evalMatch" ["Unexpected local primitive"]
-            DForeign _ -> evalPanic "evalMatch" ["Unexpected local foreign"]
-            DExpr e    -> evalExpr sym env e
+            DPrim        -> evalPanic "evalMatch" ["Unexpected local primitive"]
+            DForeign _ _ -> evalPanic "evalMatch" ["Unexpected local foreign"]
+            DExpr e      -> evalExpr sym env e

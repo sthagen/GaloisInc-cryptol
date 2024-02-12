@@ -8,26 +8,29 @@ import qualified Data.Set as Set
 
 import Cryptol.Parser.Position(Located)
 import Cryptol.ModuleSystem.Interface(IfaceNames(..))
+import Cryptol.ModuleSystem.NamingEnv(NamingEnv,mapNamingEnv)
 import Cryptol.IR.TraverseNames(TraverseNames,mapNames)
 import Cryptol.TypeCheck.AST
 import Cryptol.TypeCheck.Subst(Subst,TVars,apSubst)
 
 
-{- | `?tSu` should be applied to all types.
-     `?vSu` shoudl be applied to all values. -}
-type Su = (?tSu :: Subst, ?vSu :: Map Name Name)
+{- | `?tVarSu` substitutes 'Type's for 'TVar's which are module type parameters.
+     `?nameSu` substitutes fresh 'Name's for the functor's 'Name's
+       (in all namespaces). -}
+type Su = (?tVarSu :: Subst, ?nameSu :: Map Name Name)
 
--- | Has value names but no types.
-doVInst :: (Su, TraverseNames a) => a -> a
-doVInst = mapNames (\x -> Map.findWithDefault x x ?vSu)
+-- | Instantiate something that has 'Name's.
+doNameInst :: (Su, TraverseNames a) => a -> a
+doNameInst = mapNames (\x -> Map.findWithDefault x x ?nameSu)
 
--- | Has types but not values.
-doTInst :: (Su, TVars a) => a -> a
-doTInst = apSubst ?tSu
+-- | Instantiate something that has 'TVar's.
+doTVarInst :: (Su, TVars a) => a -> a
+doTVarInst = apSubst ?tVarSu
 
--- | Has both value names and types.
-doTVInst :: (Su, TVars a, TraverseNames a) => a -> a
-doTVInst = apSubst ?tSu . doVInst
+-- | Instantiate something that has both 'TVar's and 'Name's.
+-- Order is important here because '?tVarSu' might insert 'Name's.
+doInst :: (Su, TVars a, TraverseNames a) => a -> a
+doInst = doNameInst . doTVarInst
 
 doMap :: (Su, ModuleInstance a) => Map Name a -> Map Name a
 doMap mp =
@@ -49,7 +52,10 @@ instance ModuleInstance a => ModuleInstance (Located a) where
   moduleInstance l = moduleInstance <$> l
 
 instance ModuleInstance Name where
-  moduleInstance = doVInst
+  moduleInstance = doNameInst
+
+instance ModuleInstance NamingEnv where
+  moduleInstance = mapNamingEnv doNameInst
 
 instance ModuleInstance name => ModuleInstance (ImpName name) where
   moduleInstance x =
@@ -61,7 +67,7 @@ instance ModuleInstance (ModuleG name) where
   moduleInstance m =
     Module { mName             = mName m
            , mDoc              = Nothing
-           , mExports          = doVInst (mExports m)
+           , mExports          = doNameInst (mExports m)
            , mParamTypes       = doMap (mParamTypes m)
            , mParamFuns        = doMap (mParamFuns m)
            , mParamConstraints = moduleInstance (mParamConstraints m)
@@ -69,18 +75,18 @@ instance ModuleInstance (ModuleG name) where
            , mFunctors         = doMap (mFunctors m)
            , mNested           = doSet (mNested m)
            , mTySyns           = doMap (mTySyns m)
-           , mNewtypes         = doMap (mNewtypes m)
-           , mPrimTypes        = doMap (mPrimTypes m)
+           , mNominalTypes     = doMap (mNominalTypes m)
            , mDecls            = moduleInstance (mDecls m)
            , mSubmodules       = doMap (mSubmodules m)
            , mSignatures       = doMap (mSignatures m)
+           , mInScope          = moduleInstance (mInScope m)
            }
 
 instance ModuleInstance Type where
-  moduleInstance = doTInst
+  moduleInstance = doInst
 
 instance ModuleInstance Schema where
-  moduleInstance = doTInst
+  moduleInstance = doInst
 
 instance ModuleInstance TySyn where
   moduleInstance ts =
@@ -91,25 +97,41 @@ instance ModuleInstance TySyn where
           , tsDoc         = tsDoc ts
           }
 
-instance ModuleInstance Newtype where
+instance ModuleInstance NominalType where
   moduleInstance nt =
-    Newtype { ntName        = moduleInstance (ntName nt)
+    NominalType
+            { ntName        = moduleInstance (ntName nt)
             , ntParams      = ntParams nt
+            , ntKind        = ntKind nt
             , ntConstraints = moduleInstance (ntConstraints nt)
-            , ntConName     = moduleInstance (ntConName nt)
-            , ntFields      = moduleInstance <$> ntFields nt
+            , ntDef         = moduleInstance (ntDef nt)
+            , ntFixity      = ntFixity nt
             , ntDoc         = ntDoc nt
             }
 
-instance ModuleInstance AbstractType where
-  moduleInstance at =
-    AbstractType { atName     = moduleInstance (atName at)
-                 , atKind     = atKind at
-                 , atCtrs     = let (ps,cs) = atCtrs at
-                                in (ps, moduleInstance cs)
-                 , atFixitiy  = atFixitiy at
-                 , atDoc      = atDoc at
-                 }
+instance ModuleInstance NominalTypeDef where
+  moduleInstance def =
+    case def of
+      Struct c -> Struct (moduleInstance c)
+      Enum cs  -> Enum   (moduleInstance cs)
+      Abstract -> Abstract
+
+instance ModuleInstance StructCon where
+  moduleInstance c =
+    StructCon
+      { ntConName     = moduleInstance (ntConName c)
+      , ntFields      = moduleInstance <$> ntFields c
+      }
+
+instance ModuleInstance EnumCon where
+  moduleInstance c =
+    EnumCon
+      { ecName        = moduleInstance (ecName c)
+      , ecNumber      = ecNumber c
+      , ecFields      = moduleInstance (ecFields c)
+      , ecPublic      = ecPublic c
+      , ecDoc         = ecDoc c
+      }
 
 instance ModuleInstance DeclGroup where
   moduleInstance dg =
@@ -118,7 +140,7 @@ instance ModuleInstance DeclGroup where
       NonRecursive d -> NonRecursive (moduleInstance d)
 
 instance ModuleInstance Decl where
-  moduleInstance = doTVInst
+  moduleInstance = doInst
 
 
 instance ModuleInstance name => ModuleInstance (IfaceNames name) where

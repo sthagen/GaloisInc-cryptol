@@ -118,7 +118,6 @@ The Renamer Algorithm
 data RenamedModule = RenamedModule
   { rmModule   :: Module Name     -- ^ The renamed module
   , rmDefines  :: NamingEnv       -- ^ What this module defines
-  , rmInScope  :: NamingEnv       -- ^ What's in scope in this module
   , rmImported :: IfaceDecls
     -- ^ Imported declarations.  This provides the types for external
     -- names (used by the type-checker).
@@ -152,12 +151,11 @@ renameModule m0 =
 
      setResolvedLocals resolvedMods $
        setNestedModule pathToName
-       do (ifs,(inScope,m1)) <- collectIfaceDeps (renameModule' mname m)
+       do (ifs,m1) <- collectIfaceDeps (renameModule' mname m)
           env <- rmodDefines <$> lookupResolved mname
           pure RenamedModule
                  { rmModule = m1
                  , rmDefines = env
-                 , rmInScope = inScope
                  , rmImported = ifs
                   -- XXX: maybe we should keep the nested defines too?
                  }
@@ -220,12 +218,9 @@ class Rename f where
 renameModule' ::
   ImpName Name {- ^ Resolved name for this module -} ->
   ModuleG mname PName ->
-  RenameM (NamingEnv, ModuleG mname Name)
+  RenameM (ModuleG mname Name)
 renameModule' mname m =
-  setCurMod
-    case mname of
-      ImpTop r    -> TopModule r
-      ImpNested r -> Nested (nameModPath r) (nameIdent r)
+  setCurMod (impNameModPath mname)
 
   do resolved <- lookupResolved mname
      shadowNames' CheckNone (rmodImports resolved)
@@ -247,7 +242,7 @@ renameModule' mname m =
                      let exports = exportedDecls ds1
                      mapM_ recordUse (exported NSType exports)
                      inScope <- getNamingEnv
-                     pure (inScope, m { mDef = NormalModule ds1 })
+                     pure m { mDef = NormalModule ds1, mInScope = inScope }
 
          -- The things defined by this module are the *results*
          -- of the instantiation, so we should *not* add them
@@ -260,30 +255,20 @@ renameModule' mname m =
               let l = Just (srcRange f')
               imap <- mkInstMap l mempty (thing f') mname
 
-              {- Now we need to compute what's "in scope" of the instantiated
-              module.  This is used when the module is loaded at the command
-              line and users want to evalute things in the context of the
-              module -}
-              fuEnv <- if isFakeName (thing f')
-                          then pure mempty
-                          else lookupDefines (thing f')
-              let ren x = Map.findWithDefault x x imap
+              -- This inScope is incomplete; it only contains names from the
+              -- enclosing scope, but we also want the names in scope from the
+              -- functor, for ease of testing at the command line. We will fix
+              -- this up in doFunctorInst in the typechecker, because right now
+              -- we don't have access yet to the inScope of the functor.
+              inScope <- getNamingEnv
 
-              -- XXX: This is not quite right as it only considers the things
-              -- defined in the module to be in scope.  It misses things
-              -- that are *imported* by the functor, in particular the Cryptol
-              -- library
-              -- is missing.  See #1455.
-              inScope <- shadowNames' CheckNone (mapNamingEnv ren fuEnv)
-                         getNamingEnv
-
-              pure (inScope, m { mDef = FunctorInstance f' as' imap })
+              pure m { mDef = FunctorInstance f' as' imap, mInScope = inScope }
 
          InterfaceModule s ->
            shadowNames' CheckNone (rmodDefines resolved)
              do d <- InterfaceModule <$> renameIfaceModule mname s
                 inScope <- getNamingEnv
-                pure (inScope, m { mDef = d })
+                pure m { mDef = d, mInScope = inScope }
 
 
 checkFunctorArgs :: ModuleInstanceArgs Name -> RenameM ()
@@ -547,6 +532,7 @@ renameTopDecls' ds =
       Decl tl                 -> isValDecl (tlValue tl)
       DPrimType {}            -> False
       TDNewtype {}            -> False
+      TDEnum {}               -> False
       DParamDecl {}           -> False
       DInterfaceConstraint {} -> False
 
@@ -599,6 +585,9 @@ topDeclName topDecl =
     DPrimType d             -> hasName (thing (primTName (tlValue d)))
     TDNewtype d             -> hasName' (thing (nName (tlValue d)))
                                         [ nConName (tlValue d) ]
+    TDEnum d                -> hasName' (thing (eName (tlValue d)))
+                                        (map (thing . ecName . tlValue)
+                                             (eCons (tlValue d)))
     DModule d               -> hasName (thing (mName m))
       where NestedModule m = tlValue d
 
@@ -696,9 +685,10 @@ doModParams srcParams =
 
      forM_ repeated \ps ->
        case ps of
+         [] -> panic "doModParams" ["[]"]
          [_]      -> pure ()
-         ~(p : _) -> recordError (MultipleModParams (renModParamName p)
-                                                    (map renModParamRange ps))
+         (p : _) -> recordError (MultipleModParams (renModParamName p)
+                                                   (map renModParamRange ps))
 
      pure (mconcat paramEnvs,params)
 
@@ -723,6 +713,7 @@ instance Rename TopDecl where
       Decl d            -> Decl      <$> traverse rename d
       DPrimType d       -> DPrimType <$> traverse rename d
       TDNewtype n       -> TDNewtype <$> traverse rename n
+      TDEnum n          -> TDEnum    <$> traverse rename n
       Include n         -> return (Include n)
       DModule m  -> DModule <$> traverse rename m
       DImport li -> DImport <$> renI li
@@ -820,10 +811,8 @@ instance Rename NestedModule where
            nm             = thing lnm
        n   <- resolveName NameBind NSModule nm
        depsOf (NamedThing n)
-         do -- XXX: we should store in scope somewhere if we want to browse
-            -- nested modules properly
-            let m' = m { mName = ImpNested <$> mName m }
-            (_inScope,m1) <- renameModule' (ImpNested n) m'
+         do let m' = m { mName = ImpNested <$> mName m }
+            m1 <- renameModule' (ImpNested n) m'
             pure (NestedModule m1 { mName = lnm { thing = n } })
 
 
@@ -881,7 +870,7 @@ instance Rename Newtype where
   rename n      =
     shadowNames (nParams n) $
     do nameT <- rnLocated (renameType NameBind) (nName n)
-       nameC <- renameVar  NameBind (nConName n)
+       nameC <- renameCon NameBind (nConName n)
 
        depsOf (NamedThing nameC) (addDep (thing nameT))
 
@@ -893,9 +882,28 @@ instance Rename Newtype where
                            , nParams = ps'
                            , nBody   = body' }
 
+instance Rename EnumDecl where
+  rename n =
+    shadowNames (eParams n) $
+    do nameT  <- rnLocated (renameType NameBind) (eName n)
+       nameCs <- forM (eCons n) \tlEc ->
+                   do let con = tlValue tlEc
+                      nameC <- rnLocated (renameCon NameBind) (ecName con)
+                      depsOf (NamedThing (thing nameC)) (addDep (thing nameT))
+                      pure (nameC,tlEc)
+       depsOf (NamedThing (thing nameT)) $
+         do ps' <- traverse rename (eParams n)
+            cons <- forM nameCs \(c,tlEc) ->
+                     do ts' <- traverse rename (ecFields (tlValue tlEc))
+                        let con = EnumCon { ecName = c, ecFields = ts' }
+                        pure tlEc { tlValue = con }
+            pure EnumDecl { eName = nameT
+                          , eParams = ps'
+                          , eCons = cons
+                          }
 
-
--- | Try to resolve a name
+-- | Try to resolve a name.
+-- SPECIAL CASE: if we have a NameUse for NSValue, we also look in NSConstructor
 resolveNameMaybe :: NameType -> Namespace -> PName -> RenameM (Maybe Name)
 resolveNameMaybe nt expected qn =
   do ro <- RenameM ask
@@ -903,7 +911,14 @@ resolveNameMaybe nt expected qn =
          use = case expected of
                  NSType -> recordUse
                  _      -> const (pure ())
-     case lkpIn expected of
+         checkCon = case (nt,expected) of
+                      (NameUse, NSValue) -> lkpIn NSConstructor
+                      _ -> Nothing
+         found = case (lkpIn expected, checkCon) of
+                   (Just a, Just b) -> Just (a <> b)
+                   (Nothing, y)     -> y
+                   (x, Nothing)     -> x
+     case found of
        Just xs ->
          case xs of
           One n ->
@@ -948,7 +963,7 @@ isFakeName m =
         Nothing -> False
 
 
--- | Resolve a name, and report error on failure
+-- | Resolve a name, and report error on failure.
 resolveName :: NameType -> Namespace -> PName -> RenameM Name
 resolveName nt expected qn =
   do mb <- resolveNameMaybe nt expected qn
@@ -959,6 +974,9 @@ resolveName nt expected qn =
 
 renameVar :: NameType -> PName -> RenameM Name
 renameVar nt = resolveName nt NSValue
+
+renameCon :: NameType -> PName -> RenameM Name
+renameCon nt = resolveName nt NSConstructor
 
 renameType :: NameType -> PName -> RenameM Name
 renameType nt = resolveName nt NSType
@@ -1063,8 +1081,11 @@ instance Rename Bind where
                           }
 
 instance Rename BindDef where
-  rename DPrim     = return DPrim
-  rename DForeign  = return DForeign
+  rename DPrim        = return DPrim
+  rename (DForeign i) = DForeign <$> traverse rename i
+  rename (DImpl i)    = DImpl <$> rename i
+
+instance Rename BindImpl where
   rename (DExpr e) = DExpr <$> rename e
   rename (DPropGuards cases) = DPropGuards <$> traverse rename cases
 
@@ -1072,10 +1093,11 @@ instance Rename PropGuardCase where
   rename g = PropGuardCase <$> traverse (rnLocated rename) (pgcProps g)
                            <*> rename (pgcExpr g)
 
--- NOTE: this only renames types within the pattern.
 instance Rename Pattern where
   rename p      = case p of
     PVar lv         -> PVar <$> rnLocated (renameVar NameBind) lv
+    PCon c ps       -> PCon <$> rnLocated (renameCon NameUse)  c
+                            <*> traverse rename ps
     PWild           -> pure PWild
     PTuple ps       -> PTuple   <$> traverse rename ps
     PRecord nps     -> PRecord  <$> traverse (traverse rename) nps
@@ -1153,6 +1175,7 @@ instance Rename Expr where
     EApp f x        -> EApp    <$> rename f  <*> rename x
     EAppT f ti      -> EAppT   <$> rename f  <*> traverse rename ti
     EIf b t f       -> EIf     <$> rename b  <*> rename t  <*> rename f
+    ECase e as      -> ECase   <$> rename e  <*> traverse rename as
     EWhere e' ds    -> shadowNames (map (InModule Nothing) ds) $
                           EWhere <$> rename e' <*> renameDecls ds
     ETyped e' ty    -> ETyped  <$> rename e' <*> rename ty
@@ -1326,7 +1349,7 @@ patternEnv  = go
     do n <- liftSupply (mkLocal NSValue (getIdent thing) srcRange)
        -- XXX: for deps, we should record a use
        return (singletonNS NSValue thing n)
-
+  go (PCon _ ps)      = bindVars ps
   go PWild            = return mempty
   go (PTuple ps)      = bindVars ps
   go (PRecord fs)     = bindVars (fmap snd (recordElements fs))
@@ -1389,6 +1412,8 @@ patternEnv  = go
          do res <- bindTypes ts
             return (env' `mappend` res)
 
+instance Rename CaseAlt where
+  rename (CaseAlt p e) = shadowNames p (CaseAlt <$> rename p <*> rename e)
 
 instance Rename Match where
   rename m = case m of
@@ -1416,8 +1441,6 @@ instance PP RenamedModule where
     doc =
       vcat [ "// --- Defines -----------------------------"
            , pp (rmDefines rn)
-           , "// --- In scope ----------------------------"
-           , pp (rmInScope rn)
            , "// -- Module -------------------------------"
            , pp (rmModule rn)
            , "// -----------------------------------------"

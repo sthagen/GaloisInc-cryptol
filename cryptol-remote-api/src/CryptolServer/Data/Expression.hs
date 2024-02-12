@@ -518,7 +518,7 @@ getCryptolExpr (Let binds body) =
               , CP.bExport = CP.Public
               }) .
       fakeLoc .
-      CP.DExpr <$>
+      CP.exprDef <$>
         getCryptolExpr rhs
 
     fakeLoc = Located emptyRange
@@ -617,8 +617,7 @@ readBack ty val =
         TVTuple{} -> "tuple"
         TVRec{} -> "record"
         TVFun{} -> "fun"
-        TVNewtype nt _ _ -> identText $ nameIdent $ TC.ntName nt
-        TVAbstract{} -> "abstract"
+        TVNominal nt _ _ -> identText $ nameIdent $ TC.ntName nt
 
 
 -- | Given a suggested `name` and a type and value, attempt to bind the value

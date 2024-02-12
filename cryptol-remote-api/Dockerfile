@@ -1,5 +1,16 @@
-ARG GHCVER="8.10.7"
+ARG GHCVER="9.2.8"
+ARG CABALVER="3.10.1.0"
+# This is the version of GHC that we use as part of the process of building a
+# separate copy of GHC from source. The version of GHC that we build from source
+# is determined by the value of GHCVER.
 ARG GHCVER_BOOTSTRAP="8.10.2"
+# We pin specific versions of alex and happy that are necessary to build
+# GHC. In general, we don't want to build the latest versions of each
+# tool, as GHC may not support them (see, for example,
+# https://github.com/GaloisInc/cryptol/issues/1599). If you update GHCVER, you
+# may need to update ALEXVER and HAPPYVER as well.
+ARG ALEXVER="3.4.0.1"
+ARG HAPPYVER="1.20.1.1"
 FROM ubuntu:22.04 AS toolchain
 ARG PORTABILITY=false
 RUN apt-get update && \
@@ -12,20 +23,25 @@ RUN apt-get update && \
       $(if ${PORTABILITY}; then echo git autoconf python3 libnuma-dev; fi) \
       # Miscellaneous
       unzip
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 ENV GHCUP_INSTALL_BASE_PREFIX=/opt \
-    PATH=/opt/.ghcup/bin:$PATH
-RUN curl -o /usr/local/bin/ghcup "https://downloads.haskell.org/~ghcup/0.1.17.7/x86_64-linux-ghcup-0.1.17.7" && \
+    PATH=/opt/.ghcup/bin:/root/.local/bin:$PATH
+RUN curl -o /usr/local/bin/ghcup "https://downloads.haskell.org/~ghcup/0.1.19.4/x86_64-linux-ghcup-0.1.19.4" && \
     chmod +x /usr/local/bin/ghcup
-RUN ghcup install cabal --set
+RUN ghcup install cabal ${CABALVER} --set
 ENV PATH=/root/.cabal/bin:$PATH
 ADD ./cryptol-remote-api/ghc-portability.patch .
 ARG GHCVER
+ARG CABALVER
 ARG GHCVER_BOOTSTRAP
+ARG ALEXVER
+ARG HAPPYVER
 RUN if ${PORTABILITY}; then \
         ghcup install ghc ${GHCVER_BOOTSTRAP} && \
         ghcup set ghc ${GHCVER_BOOTSTRAP} && \
         cabal v2-update && \
-        cabal v2-install alex happy-1.19.12 && \
+        cabal v2-install alex-${ALEXVER} happy-${HAPPYVER} && \
         git clone --recurse-submodules --depth 1 --branch ghc-${GHCVER}-release https://gitlab.haskell.org/ghc/ghc.git && \
         cd ./ghc && \
         git apply ../ghc-portability.patch && \
@@ -64,7 +80,9 @@ ENV PATH=/usr/local/bin:/cryptol/rootfs/usr/local/bin:$PATH
 RUN mkdir -p rootfs/"${CRYPTOLPATH}" \
     && cp -r lib/* rootfs/"${CRYPTOLPATH}"
 WORKDIR /cryptol/rootfs/usr/local/bin
-RUN curl -sL -o solvers.zip "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20221212/ubuntu-22.04-bin.zip" && \
+# The URL here is based on the same logic used to specify BIN_ZIP_FILE in
+# `.github/workflow/ci.yml`, but specialized to x86-64 Ubuntu.
+RUN curl -sL -o solvers.zip "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20230711/ubuntu-22.04-X64-bin.zip" && \
     unzip solvers.zip && rm solvers.zip && chmod +x *
 USER root
 RUN chown -R root:root /cryptol/rootfs

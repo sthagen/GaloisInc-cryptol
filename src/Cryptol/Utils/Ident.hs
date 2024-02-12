@@ -27,6 +27,7 @@ module Cryptol.Utils.Ident
   , modNameChunks
   , modNameChunksText
   , packModName
+  , identToModName
   , preludeName
   , preludeReferenceName
   , undefinedModName
@@ -51,6 +52,7 @@ module Cryptol.Utils.Ident
   , mkIdent
   , mkInfix
   , isInfixIdent
+  , isUpperIdent
   , nullIdent
   , identText
   , modParamIdent
@@ -65,7 +67,7 @@ module Cryptol.Utils.Ident
     -- * Original names
   , OrigName(..)
   , OrigSource(..)
-  , ogFromModParam
+  , ogIsModParam
 
     -- * Identifiers for primitives
   , PrimIdent(..)
@@ -77,7 +79,7 @@ module Cryptol.Utils.Ident
   ) where
 
 import           Control.DeepSeq (NFData)
-import           Data.Char (isSpace)
+import           Data.Char (isSpace,isUpper)
 import           Data.List (unfoldr)
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -90,7 +92,11 @@ import Cryptol.Utils.Panic(panic)
 --------------------------------------------------------------------------------
 
 -- | Namespaces for names
-data Namespace = NSValue | NSType | NSModule
+data Namespace = NSValue
+               | NSConstructor -- ^ This is for enum and newtype constructors
+
+               | NSType
+               | NSModule
   deriving (Generic,Show,NFData,Eq,Ord,Enum,Bounded)
 
 allNamespaces :: [Namespace]
@@ -232,6 +238,9 @@ packModName strs = textToModName (T.intercalate modSep (map trim strs))
   -- trim space off of the start and end of the string
   trim str = T.dropWhile isSpace (T.dropWhileEnd isSpace str)
 
+identToModName :: Ident -> ModName
+identToModName (Ident _ anon txt) = ModName txt anon
+
 modSep :: T.Text
 modSep  = "::"
 
@@ -273,19 +282,21 @@ data OrigName = OrigName
   , ogModule    :: ModPath
   , ogSource    :: OrigSource
   , ogName      :: Ident
+  , ogFromParam :: !(Maybe Ident)
+    -- ^ Does this name come from a module parameter
   } deriving (Eq,Ord,Show,Generic,NFData)
 
 -- | Describes where a top-level name came from
 data OrigSource =
     FromDefinition
   | FromFunctorInst
-  | FromModParam Ident
+  | FromModParam
     deriving (Eq,Ord,Show,Generic,NFData)
 
 -- | Returns true iff the 'ogSource' of the given 'OrigName' is 'FromModParam'
-ogFromModParam :: OrigName -> Bool
-ogFromModParam og = case ogSource og of
-                      FromModParam _ -> True
+ogIsModParam :: OrigName -> Bool
+ogIsModParam og = case ogSource og of
+                      FromModParam -> True
                       _ -> False
 
 
@@ -331,6 +342,12 @@ mkInfix  = Ident True NormalName
 
 isInfixIdent :: Ident -> Bool
 isInfixIdent (Ident b _ _) = b
+
+isUpperIdent :: Ident -> Bool
+isUpperIdent (Ident _ mb t) =
+  case mb of
+    NormalName | Just (c,_) <- T.uncons t -> isUpper c
+    _ -> False
 
 nullIdent :: Ident -> Bool
 nullIdent = T.null . identText

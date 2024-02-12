@@ -187,6 +187,8 @@ rewE rews = go
       ESel e s        -> ESel    <$> go e  <*> return s
       ESet ty e s v   -> ESet ty <$> go e  <*> return s <*> go v
       EIf e1 e2 e3    -> EIf     <$> go e1 <*> go e2 <*> go e3
+      ECase e as d    -> ECase   <$> go e  <*> traverse (rewCase rews) as
+                                           <*> traverse (rewCase rews) d
 
       EComp len t e mss -> EComp len t <$> go e  <*> mapM (mapM (rewM rews)) mss
       EVar _          -> return expr
@@ -204,6 +206,9 @@ rewE rews = go
       EPropGuards guards ty -> EPropGuards <$> (\(props, e) -> (,) <$> pure props <*> go e) `traverse` guards <*> pure ty
 
 
+rewCase :: RewMap -> CaseAlt -> M CaseAlt
+rewCase rew (CaseAlt xs e) = CaseAlt xs <$> rewE rew e
+
 rewM :: RewMap -> Match -> M Match
 rewM rews ma =
   case ma of
@@ -218,9 +223,9 @@ rewD rews d = do e <- rewDef rews (dDefinition d)
                  return d { dDefinition = e }
 
 rewDef :: RewMap -> DeclDef -> M DeclDef
-rewDef rews (DExpr e)    = DExpr <$> rewE rews e
-rewDef _    DPrim        = return DPrim
-rewDef _    (DForeign t) = return $ DForeign t
+rewDef rews (DExpr e)       = DExpr <$> rewE rews e
+rewDef _    DPrim           = return DPrim
+rewDef rews (DForeign t me) = DForeign t <$> traverse (rewE rews) me
 
 rewDeclGroup :: RewMap -> DeclGroup -> M DeclGroup
 rewDeclGroup rews dg =
@@ -240,12 +245,17 @@ rewDeclGroup rews dg =
 
   consider d   =
     case dDefinition d of
-      DPrim      -> Left d
-      DForeign _ -> Left d
-      DExpr e    -> let (tps,props,e') = splitTParams e
-                    in if not (null tps) && notFun e'
-                        then Right (d, tps, props, e')
-                        else Left d
+      DPrim         -> Left d
+      DForeign _ me -> case me of
+                         Nothing -> Left d
+                         Just e  -> conExpr e
+      DExpr e       -> conExpr e
+    where
+    conExpr e =
+      let (tps,props,e') = splitTParams e
+      in if not (null tps) && notFun e'
+          then Right (d, tps, props, e')
+          else Left d
 
   rewSame ds =
      do new <- forM (NE.toList ds) $ \(d,_,_,e) ->

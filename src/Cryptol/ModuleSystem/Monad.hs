@@ -513,6 +513,9 @@ getSupply  = ModuleT (meSupply `fmap` get)
 getMonoBinds :: ModuleM Bool
 getMonoBinds  = ModuleT (meMonoBinds `fmap` get)
 
+getEvalForeignPolicy :: ModuleM EvalForeignPolicy
+getEvalForeignPolicy = ModuleT (meEvalForeignPolicy <$> get)
+
 setMonoBinds :: Bool -> ModuleM ()
 setMonoBinds b = ModuleT $ do
   env <- get
@@ -576,8 +579,8 @@ getEvalOpts =
   do act <- getEvalOptsAction
      liftIO act
 
-getNewtypes :: ModuleM (Map T.Name T.Newtype)
-getNewtypes = ModuleT (loadedNewtypes <$> get)
+getNominalTypes :: ModuleM (Map T.Name T.NominalType)
+getNominalTypes = ModuleT (loadedNominalTypes <$> get)
 
 getFocusedModule :: ModuleM (Maybe P.ModName)
 getFocusedModule  = ModuleT (meFocusedModule `fmap` get)

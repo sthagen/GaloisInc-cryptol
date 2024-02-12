@@ -1,6 +1,6 @@
 Cabal-version:       2.4
 Name:                cryptol
-Version:             2.13.0.99
+Version:             3.1.0.99
 Synopsis:            Cryptol: The Language of Cryptography
 Description: Cryptol is a domain-specific language for specifying cryptographic algorithms. A Cryptol implementation of an algorithm resembles its mathematical specification more closely than an implementation in a general purpose language. For more, see <http://www.cryptol.net/>.
 License:             BSD-3-Clause
@@ -58,6 +58,7 @@ library
                        deepseq           >= 1.3,
                        directory         >= 1.2.2.0,
                        exceptions,
+                       file-embed        >= 0.0.16,
                        filepath          >= 1.3,
                        gitrev            >= 1.0,
                        ghc-prim,
@@ -75,7 +76,7 @@ library
                        prettyprinter     >= 1.7.0,
                        pretty-show,
                        process           >= 1.2,
-                       sbv               >= 9.1 && < 10.2,
+                       sbv               >= 9.1 && < 10.3,
                        simple-smt        >= 0.9.7,
                        stm               >= 2.4,
                        strict,
@@ -86,7 +87,7 @@ library
                        mtl               >= 2.2.1,
                        time              >= 1.6.0.1,
                        panic             >= 0.3,
-                       what4             >= 1.4 && < 1.5
+                       what4             >= 1.4 && < 1.6
 
   if impl(ghc >= 9.0)
     build-depends:     ghc-bignum        >= 1.0 && < 1.4
@@ -142,6 +143,7 @@ library
                        Cryptol.ModuleSystem.Name,
                        Cryptol.ModuleSystem.Names,
                        Cryptol.ModuleSystem.NamingEnv,
+                       Cryptol.ModuleSystem.NamingEnv.Types,
                        Cryptol.ModuleSystem.Binds
                        Cryptol.ModuleSystem.Exports,
                        Cryptol.ModuleSystem.Renamer,

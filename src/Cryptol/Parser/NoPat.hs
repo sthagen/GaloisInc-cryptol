@@ -6,10 +6,12 @@
 -- Stability   :  provisional
 -- Portability :  portable
 --
--- The purpose of this module is to convert all patterns to variable
+-- The purpose of this module is to convert all irrefutable patterns to variable
 -- patterns.  It also eliminates pattern bindings by de-sugaring them
 -- into `Bind`.  Furthermore, here we associate signatures, fixities,
--- and pragmas with the names to which they belong.
+-- and pragmas with the names to which they belong.  We also merge
+-- empty 'DForeign' binds with their cryptol implementations, if they
+-- exist.
 
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -22,7 +24,7 @@ module Cryptol.Parser.NoPat (RemovePatterns(..),Error(..)) where
 
 import Cryptol.Parser.AST
 import Cryptol.Parser.Position(Range(..),emptyRange,start,at)
-import Cryptol.Parser.Names (namesP)
+import Cryptol.Parser.Names (namesP')
 import Cryptol.Utils.PP
 import Cryptol.Utils.Panic(panic)
 import Cryptol.Utils.RecordMap
@@ -57,7 +59,7 @@ instance RemovePatterns (NestedModule PName) where
 
 simpleBind :: Located PName -> Expr PName -> Bind PName
 simpleBind x e = Bind { bName = x, bParams = []
-                      , bDef = at e (Located emptyRange (DExpr e))
+                      , bDef = at e (Located emptyRange (exprDef e))
                       , bSignature = Nothing, bPragmas = []
                       , bMono = True, bInfix = False, bFixity = Nothing
                       , bDoc = Nothing
@@ -72,10 +74,21 @@ sel p x s = let (a,ts) = splitSimpleP p
 -- Simple patterns may only contain variables and type annotations.
 
 -- XXX: We can replace the types in the selectors with annotations on the bindings.
-noPat :: Pattern PName -> NoPatM (Pattern PName, [Bind PName])
-noPat pat =
+noPat :: Bool -> Pattern PName -> NoPatM (Pattern PName, [Bind PName])
+noPat conOk pat =
   case pat of
     PVar x -> return (PVar x, [])
+
+    PCon c ps
+      | conOk ->
+        do (as,dss) <- mapAndUnzipM (noPat False) ps
+           pure (PCon c as, concat dss)
+
+      | otherwise ->
+        do let r = srcRange c
+           recordError (InvalidConstructorPattern r)
+           x <- newName
+           pure (pVar r x, [])
 
     PWild ->
       do x <- newName
@@ -83,7 +96,7 @@ noPat pat =
          return (pVar r x, [])
 
     PTuple ps ->
-      do (as,dss) <- unzip `fmap` mapM noPat ps
+      do (as,dss) <- unzip `fmap` mapM (noPat False) ps
          x <- newName
          r <- getRange
          let len      = length ps
@@ -97,7 +110,7 @@ noPat pat =
          return (pTy r x (TSeq (TNum 0) TWild), [])
 
     PList ps ->
-      do (as,dss) <- unzip `fmap` mapM noPat ps
+      do (as,dss) <- unzip `fmap` mapM (noPat False) ps
          x <- newName
          r <- getRange
          let len      = length ps
@@ -107,7 +120,7 @@ noPat pat =
 
     PRecord fs ->
       do let (shape, els) = unzip (canonicalFields fs)
-         (as,dss) <- unzip `fmap` mapM (noPat . snd) els
+         (as,dss) <- unzip `fmap` mapM (noPat False . snd) els
          x <- newName
          r <- getRange
          let ty           = TRecord (fmap (\(rng,_) -> (rng,TWild)) fs)
@@ -115,13 +128,13 @@ noPat pat =
          return (pTy r x ty, zipWith getN as shape ++ concat dss)
 
     PTyped p t ->
-      do (a,ds) <- noPat p
+      do (a,ds) <- noPat conOk p
          return (PTyped a t, ds)
 
     -- XXX: We can do more with type annotations here
     PSplit p1 p2 ->
-      do (a1,ds1) <- noPat p1
-         (a2,ds2) <- noPat p2
+      do (a1,ds1) <- noPat False p1
+         (a2,ds2) <- noPat False p2
          x <- newName
          tmp <- newName
          r <- getRange
@@ -130,11 +143,11 @@ noPat pat =
              b2   = sel a2 tmp (TupleSel 1 (Just 2))
          return (pVar r x, bTmp : b1 : b2 : ds1 ++ ds2)
 
-    PLocated p r1 -> inRange r1 (noPat p)
+    PLocated p r1 -> inRange r1 (noPat conOk p)
 
   where
   pVar r x   = PVar (Located r x)
-  pTy  r x t = PTyped (PVar (Located r x)) t
+  pTy  r x   = PTyped (PVar (Located r x))
 
 
 splitSimpleP :: Pattern PName -> (Located PName, [Type PName])
@@ -166,6 +179,7 @@ noPatE expr =
     EApp e1 e2    -> EApp   <$> noPatE e1 <*> noPatE e2
     EAppT e ts    -> EAppT  <$> noPatE e <*> return ts
     EIf e1 e2 e3  -> EIf    <$> noPatE e1 <*> noPatE e2 <*> noPatE e3
+    ECase e as    -> ECase  <$> noPatE e  <*> traverse noPatAlt as
     EWhere e ds   -> EWhere <$> noPatE e <*> noPatDs ds
     ETyped e t    -> ETyped <$> noPatE e <*> return t
     ETypeVal {}   -> return expr
@@ -177,6 +191,14 @@ noPatE expr =
     EInfix x y f z-> EInfix  <$> noPatE x <*> pure y <*> pure f <*> noPatE z
     EPrefix op e  -> EPrefix op <$> noPatE e
 
+noPatAlt :: CaseAlt PName -> NoPatM (CaseAlt PName)
+noPatAlt (CaseAlt p e) =
+  do (p1,ds) <- noPat True p
+     e1 <- noPatE e
+     let e2 = case ds of
+                [] -> e1
+                _  -> EWhere e1 (map DBind ds)
+     pure (CaseAlt p1 e2)
 
 noPatUF :: UpdField PName -> NoPatM (UpdField PName)
 noPatUF (UpdField h ls e) = UpdField h ls <$> noPatE e
@@ -190,7 +212,7 @@ noPatUF (UpdField h ls e) = UpdField h ls <$> noPatE e
 noPatFun :: Maybe PName -> Int -> [Pattern PName] -> Expr PName -> NoPatM (Expr PName)
 noPatFun _   _      []     e = noPatE e
 noPatFun mnm offset (p:ps) e =
-  do (p',ds) <- noPat p
+  do (p',ds) <- noPat False p
      e' <- noPatFun mnm (offset+1) ps e
      let body = case ds of
                   [] -> e'
@@ -207,7 +229,7 @@ noPatArm ms = concat <$> mapM noPatM ms
 
 noPatM :: Match PName -> NoPatM [Match PName]
 noPatM (Match p e) =
-  do (x,bs) <- noPat p
+  do (x,bs) <- noPat False p
      e1     <- noPatE e
      return (Match x e1 : map MatchLet bs)
 noPatM (MatchLet b) = (return . MatchLet) <$> noMatchB b
@@ -220,20 +242,25 @@ noMatchB b =
           | otherwise        -> panic "NoPat" [ "noMatchB: primitive with params"
                                               , show b ]
 
-    DForeign
+    DForeign Nothing
       | null (bParams b) -> return b
       | otherwise        -> panic "NoPat" [ "noMatchB: foreign with params"
                                           , show b ]
 
-    DExpr e ->
-      do e' <- noPatFun (Just (thing (bName b))) 0 (bParams b) e
-         return b { bParams = [], bDef = DExpr e' <$ bDef b }
+    DForeign (Just i) -> noMatchI (DForeign . Just) i
 
-    DPropGuards guards ->
-      do let nm = thing (bName b)
-             ps = bParams b
-         gs <- mapM (noPatPropGuardCase nm ps) guards
-         pure b { bParams = [], bDef = DPropGuards gs <$ bDef b }
+    DImpl i -> noMatchI DImpl i
+
+  where
+  noMatchI def i =
+    do i' <- case i of
+               DExpr e ->
+                 DExpr <$> noPatFun (Just (thing (bName b))) 0 (bParams b) e
+               DPropGuards guards ->
+                 let nm = thing (bName b)
+                     ps = bParams b
+                 in  DPropGuards <$> mapM (noPatPropGuardCase nm ps) guards
+       pure b { bParams = [], bDef = def i' <$ bDef b }
 
 noPatPropGuardCase ::
   PName ->
@@ -254,13 +281,13 @@ noMatchD decl =
                           return [DBind b1]
     DRec {}         -> panic "noMatchD" [ "DRec" ]
 
-    DPatBind p e    -> do (p',bs) <- noPat p
+    DPatBind p e    -> do (p',bs) <- noPat False p
                           let (x,ts) = splitSimpleP p'
                           e1 <- noPatE e
                           let e2 = foldl ETyped e1 ts
                           return $ DBind Bind { bName = x
                                               , bParams = []
-                                              , bDef = at e (Located emptyRange (DExpr e2))
+                                              , bDef = at e (Located emptyRange (exprDef e2))
                                               , bSignature = Nothing
                                               , bPragmas = []
                                               , bMono = False
@@ -280,11 +307,13 @@ noPatDs ds =
   do ds1 <- concat <$> mapM noMatchD ds
      let fixes = Map.fromListWith (++) $ concatMap toFixity ds1
          amap = AnnotMap
-           { annPragmas = Map.fromListWith (++) $ concatMap toPragma ds1
-           , annSigs    = Map.fromListWith (++) $ concatMap toSig ds1
-           , annValueFs = fixes
-           , annTypeFs  = fixes
-           , annDocs    = Map.empty
+           { annPragmas  = Map.fromListWith (++) $ concatMap toPragma ds1
+           , annSigs     = Map.fromListWith (++) $ concatMap toSig ds1
+           , annValueFs  = fixes
+           , annTypeFs   = fixes
+           , annDocs     = Map.empty
+             -- There shouldn't be any foreigns at non-top-level
+           , annForeigns = Map.empty
            }
 
      (ds2, AnnotMap { .. }) <- runStateT amap (annotDs ds1)
@@ -314,11 +343,12 @@ noPatTopDs tds =
          fixes     = Map.fromListWith (++) $ concatMap toFixity allDecls
 
      let ann = AnnotMap
-           { annPragmas = Map.fromListWith (++) $ concatMap toPragma allDecls
-           , annSigs    = Map.fromListWith (++) $ concatMap toSig    allDecls
-           , annValueFs = fixes
-           , annTypeFs  = fixes
-           , annDocs    = Map.fromListWith (++) $ concatMap toDocs $ decls tds
+           { annPragmas  = Map.fromListWith (++) $ concatMap toPragma allDecls
+           , annSigs     = Map.fromListWith (++) $ concatMap toSig    allDecls
+           , annValueFs  = fixes
+           , annTypeFs   = fixes
+           , annDocs     = Map.fromListWith (++) $ concatMap toDocs $ decls tds
+           , annForeigns = Map.fromListWith (<>) $ concatMap toForeigns allDecls
           }
 
      (tds', AnnotMap { .. }) <- runStateT ann (annotTopDs desugared)
@@ -362,12 +392,25 @@ noPatModule m =
 
 --------------------------------------------------------------------------------
 
+-- | For each binding name, does there exist an empty foreign bind, a normal
+-- cryptol bind, or both.
+data AnnForeign = OnlyForeign | OnlyImpl | BothForeignImpl
+
+instance Semigroup AnnForeign where
+  OnlyForeign     <> OnlyImpl        = BothForeignImpl
+  OnlyImpl        <> OnlyForeign     = BothForeignImpl
+  _               <> BothForeignImpl = BothForeignImpl
+  BothForeignImpl <> _               = BothForeignImpl
+  OnlyForeign     <> OnlyForeign     = OnlyForeign
+  OnlyImpl        <> OnlyImpl        = OnlyImpl
+
 data AnnotMap = AnnotMap
   { annPragmas  :: Map.Map PName [Located  Pragma       ]
   , annSigs     :: Map.Map PName [Located (Schema PName)]
   , annValueFs  :: Map.Map PName [Located  Fixity       ]
   , annTypeFs   :: Map.Map PName [Located  Fixity       ]
   , annDocs     :: Map.Map PName [Located  Text         ]
+  , annForeigns :: Map.Map PName AnnForeign
   }
 
 type Annotates a = a -> StateT AnnotMap NoPatM a
@@ -398,8 +441,9 @@ annotTopDs tds =
         DParamDecl {} -> (d :) <$> annotTopDs ds
         DInterfaceConstraint {} -> (d :) <$> annotTopDs ds
 
-        -- XXX: we may want to add pragmas to newtypes?
+        -- XXX: we may want to add pragmas to newtypes and enums?
         TDNewtype {} -> (d :) <$> annotTopDs ds
+        TDEnum {}    -> (d :) <$> annotTopDs ds
         Include {}   -> (d :) <$> annotTopDs ds
 
         DModule m ->
@@ -428,7 +472,7 @@ annotDs [] = return []
 annotD :: Decl PName -> ExceptionT () (StateT AnnotMap NoPatM) (Decl PName)
 annotD decl =
   case decl of
-    DBind b       -> DBind <$> lift (annotB b)
+    DBind b       -> DBind <$> annotB b
     DRec {}       -> panic "annotD" [ "DRec" ]
     DSignature {} -> raise ()
     DFixity{}     -> raise ()
@@ -439,7 +483,10 @@ annotD decl =
     DLocated d r  -> (`DLocated` r) <$> annotD d
 
 -- | Add pragma/signature annotations to a binding.
-annotB :: Annotates (Bind PName)
+-- Also perform de-duplication of empty 'DForeign' binds generated by the parser
+-- if there exists a cryptol implementation.
+-- The exception indicates which declarations are no longer needed.
+annotB :: Bind PName -> ExceptionT () (StateT AnnotMap NoPatM) (Bind PName)
 annotB Bind { .. } =
   do AnnotMap { .. } <- get
      let name       = thing bName
@@ -448,9 +495,17 @@ annotB Bind { .. } =
          (thisSigs  , ss') = Map.updateLookupWithKey remove name annSigs
          (thisFixes , fs') = Map.updateLookupWithKey remove name annValueFs
          (thisDocs  , ds') = Map.updateLookupWithKey remove name annDocs
-     s <- lift $ checkSigs name $ jn thisSigs
-     f <- lift $ checkFixs name $ jn thisFixes
-     d <- lift $ checkDocs name $ jn thisDocs
+         thisForeign       = Map.lookup name annForeigns
+     -- Compute the new def before updating the state, since we don't want to
+     -- consume the annotations if we are throwing away an empty foreign def.
+     def' <- case thisForeign of
+               Just BothForeignImpl
+                 | DForeign _ <- thing bDef -> raise ()
+                 | DImpl i    <- thing bDef -> pure (DForeign (Just i) <$ bDef)
+               _ -> pure bDef
+     s <- lift $ lift $ checkSigs name $ jn thisSigs
+     f <- lift $ lift $ checkFixs name $ jn thisFixes
+     d <- lift $ lift $ checkDocs name $ jn thisDocs
      set AnnotMap { annPragmas = ps'
                   , annSigs    = ss'
                   , annValueFs = fs'
@@ -458,6 +513,7 @@ annotB Bind { .. } =
                   , ..
                   }
      return Bind { bSignature = s
+                 , bDef = def'
                  , bPragmas = map thing (jn thisPs) ++ bPragmas
                  , bFixity = f
                  , bDoc = d
@@ -544,13 +600,20 @@ toDocs TopLevel { .. }
       DBind b         -> [ (thing (bName b), [txt]) ]
       DRec {}         -> panic "toDocs" [ "DRec" ]
       DLocated d _    -> go txt d
-      DPatBind p _    -> [ (thing n, [txt]) | n <- namesP p ]
+      DPatBind p _    -> [ (thing n, [txt]) | n <- namesP' p ]
 
       -- XXX revisit these
       DPragma _ _     -> []
       DType _         -> []
       DProp _         -> []
 
+-- | Is this declaration a foreign or regular bind?
+toForeigns :: Decl PName -> [(PName, AnnForeign)]
+toForeigns (DLocated d _) = toForeigns d
+toForeigns (DBind Bind {..})
+  | DForeign Nothing <- thing bDef = [ (thing bName, OnlyForeign) ]
+  | DImpl _          <- thing bDef = [ (thing bName, OnlyImpl) ]
+toForeigns _ = []
 
 --------------------------------------------------------------------------------
 newtype NoPatM a = M { unM :: ReaderT Range (StateT RW Id) a }
@@ -563,6 +626,7 @@ data Error  = MultipleSignatures PName [Located (Schema PName)]
             | MultipleFixities PName [Range]
             | FixityNoBind (Located PName)
             | MultipleDocs PName [Range]
+            | InvalidConstructorPattern Range
               deriving (Show,Generic, NFData)
 
 instance Functor NoPatM where fmap = liftM
@@ -605,21 +669,21 @@ instance PP Error where
     case err of
       MultipleSignatures x ss ->
         text "Multiple type signatures for" <+> quotes (pp x)
-        $$ nest 2 (vcat (map pp ss))
+        $$ indent 2 (vcat (map pp ss))
 
       SignatureNoBind x s ->
         text "At" <+> pp (srcRange x) <.> colon <+>
         text "Type signature without a matching binding:"
-         $$ nest 2 (pp (thing x) <+> colon <+> pp s)
+         $$ indent 2 (pp (thing x) <+> colon <+> pp s)
 
       PragmaNoBind x s ->
         text "At" <+> pp (srcRange x) <.> colon <+>
         text "Pragma without a matching binding:"
-         $$ nest 2 (pp s)
+         $$ indent 2 (pp s)
 
       MultipleFixities n locs ->
         text "Multiple fixity declarations for" <+> quotes (pp n)
-        $$ nest 2 (vcat (map pp locs))
+        $$ indent 2 (vcat (map pp locs))
 
       FixityNoBind n ->
         text "At" <+> pp (srcRange n) <.> colon <+>
@@ -628,4 +692,10 @@ instance PP Error where
 
       MultipleDocs n locs ->
         text "Multiple documentation blocks given for:" <+> pp n
-        $$ nest 2 (vcat (map pp locs))
+        $$ indent 2 (vcat (map pp locs))
+
+      InvalidConstructorPattern r ->
+        "At" <+> pp r <.> colon <+> "Invalid constructor pattern"
+         $$ indent 2 "Constructors may appear only at the top level of a case."
+
+
