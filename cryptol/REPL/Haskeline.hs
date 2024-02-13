@@ -153,7 +153,7 @@ repl cryrc projectConfig replMode callStacks stopOnError begin =
          CommandOk -> do
           begin
           case projectConfig of
-            Just config -> CommandOk <$ Project.run config
+            Just config -> CommandOk <$ Project.loadProject config
             Nothing     -> crySession replMode stopOnError
          _ -> return status
 
